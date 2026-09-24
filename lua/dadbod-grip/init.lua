@@ -121,6 +121,30 @@ local function select_projection_is_direct(sql_text, adapter_kind)
   local tokens = {}
   local i = 1
   local len = #sql_text
+  -- Keep UTF-8 identifier bytes together; punctuation still ends the word.
+  local word_start = "[%a_\128-\255]"
+  local word_part = "[%w_$\128-\255]"
+  local value_keywords = {
+    CURRENT_DATE = true,
+    CURRENT_TIME = true,
+    CURRENT_TIMESTAMP = true,
+    ["NULL"] = true,
+  }
+  local dialect_values = {
+    postgresql = {
+      "LOCALTIME", "LOCALTIMESTAMP", "CURRENT_CATALOG", "CURRENT_ROLE",
+      "CURRENT_SCHEMA", "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER",
+      "TRUE", "FALSE",
+    },
+    mysql = {
+      "CURRENT_USER", "CURRENT_ROLE", "LOCALTIME", "LOCALTIMESTAMP",
+      "UTC_DATE", "UTC_TIME", "UTC_TIMESTAMP", "TRUE", "FALSE",
+    },
+    sqlserver = { "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER" },
+  }
+  for _, keyword in ipairs(dialect_values[adapter_kind] or {}) do
+    value_keywords[keyword] = true
+  end
 
   local function skip_space()
     while i <= len and sql_text:sub(i, i):match("%s") do i = i + 1 end
@@ -128,9 +152,9 @@ local function select_projection_is_direct(sql_text, adapter_kind)
 
   local function read_word()
     local start = i
-    if not sql_text:sub(i, i):match("[%a_]") then return nil end
+    if not sql_text:sub(i, i):match(word_start) then return nil end
     i = i + 1
-    while i <= len and sql_text:sub(i, i):match("[%w_$]") do i = i + 1 end
+    while i <= len and sql_text:sub(i, i):match(word_part) do i = i + 1 end
     return sql_text:sub(start, i - 1)
   end
 
@@ -168,21 +192,29 @@ local function select_projection_is_direct(sql_text, adapter_kind)
     local next_ch = sql_text:sub(i + 1, i + 1)
 
     if ch == "-" and next_ch == "-" then
+      -- MySQL requires whitespace/control after --; otherwise it can be
+      -- arithmetic, e.g. total--1 AS status, rather than a comment.
+      local following = sql_text:sub(i + 2, i + 2)
+      if adapter_kind == "mysql" and following ~= ""
+          and not following:match("[%s%c]") then return false end
       local newline = sql_text:find("\n", i + 2, true)
       i = newline and (newline + 1) or (len + 1)
     elseif ch == "/" and next_ch == "*" then
+      -- MySQL/MariaDB execute SQL inside these comment forms. Skipping them
+      -- could hide an alias or expression from the projection check.
+      if adapter_kind == "mysql"
+          and (sql_text:sub(i + 2, i + 2) == "!"
+            or sql_text:sub(i + 2, i + 3) == "M!") then return false end
       local close = sql_text:find("*/", i + 2, true)
       if not close then return false end
       i = close + 2
     elseif ch == '"' or ch == "`" or ch == "[" then
-      -- MySQL/MariaDB treat double quotes as string delimiters unless
-      -- ANSI_QUOTES is enabled. The adapter cannot assume that SQL mode, so
-      -- double-quoted projections stay read-only there.
-      if ch == '"' and adapter_kind == "mysql" then return false end
+      -- The MySQL/MariaDB adapter enables ANSI_QUOTES before each query,
+      -- so double quotes denote identifiers there too.
       local ident = read_quoted(ch)
       if not ident then return false end
       tokens[#tokens + 1] = { kind = "ident", text = ident }
-    elseif ch:match("[%a_]") then
+    elseif ch:match(word_start) then
       local word = read_word()
       if word:upper() == "FROM" then break end
       tokens[#tokens + 1] = { kind = "ident", text = word, upper = word:upper() }
@@ -222,6 +254,13 @@ local function select_projection_is_direct(sql_text, adapter_kind)
 
     if token.kind ~= "ident" then return false end
     pos = pos + 1
+
+    -- Bare SQL value expressions must not be treated as column references.
+    -- Quoted names have no `upper`; qualified names are column references.
+    if value_keywords[token.upper]
+        and (not tokens[pos] or tokens[pos].kind ~= "dot") then
+      return false
+    end
 
     while tokens[pos] and tokens[pos].kind == "dot" do
       pos = pos + 1

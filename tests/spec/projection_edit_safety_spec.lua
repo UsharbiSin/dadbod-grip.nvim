@@ -3,6 +3,8 @@
 
 local grip = require("dadbod-grip")
 local view = require("dadbod-grip.view")
+local data = require("dadbod-grip.data")
+local sql = require("dadbod-grip.sql")
 
 local url = "sqlite:tests/seed_sqlite.db"
 
@@ -31,9 +33,9 @@ local function cleanup_grids()
   end
 end
 
-local function open_query(sql)
+local function open_query(query_sql, query_url)
   cleanup_grids()
-  grip.open(sql, url, { from_pad = true })
+  grip.open(query_sql, query_url or url, { from_pad = true })
   local bufnr, session = next(view._sessions)
   assert(bufnr and session, "expected a grid session")
   return session
@@ -70,7 +72,88 @@ FROM orders;
   eq(view._is_editable(session), true, "grid edit actions should remain enabled")
 end)
 
+-- A separate database keeps the shared seed unchanged for later specs.
+local fixture = vim.fn.tempname() .. "_projection.db"
+vim.fn.system({ "sqlite3", fixture }, [[
+CREATE TABLE projection_values (
+  id INTEGER PRIMARY KEY,
+  "姓名" TEXT,
+  "CURRENT_DATE" TEXT,
+  "CURRENT_TIME" TEXT,
+  "CURRENT_TIMESTAMP" TEXT,
+  "user" TEXT,
+  "true" TEXT,
+  "false" TEXT
+);
+INSERT INTO projection_values VALUES (
+  1, 'Alice', 'stored-date', 'stored-time', 'stored-timestamp',
+  'stored-user', 'stored-true', 'stored-false'
+);
+]])
+assert(vim.v.shell_error == 0, "could not create projection fixture")
+local fixture_url = "sqlite:" .. fixture
+
+local function assert_edit_targets(session, column)
+  eq(session.state.readonly, false, "direct column must stay editable")
+  eq(view._is_editable(session), true, "grid edit actions must stay enabled")
+  local changed = data.add_change(session.state, 1, column, "changed")
+  local preview = sql.preview_staged(
+    session.state.table_name, data.get_updates(changed), {}, {})
+  eq(preview,
+    'UPDATE "projection_values" SET "' .. column
+      .. '" = \'changed\' WHERE "id" = \'1\';',
+    "staged update must target the displayed base-table column")
+end
+
+for _, projection in ipairs({ "姓名", '"姓名"' }) do
+  test("Unicode projection stays editable: " .. projection, function()
+    local session = open_query(
+      "SELECT id, " .. projection .. " FROM projection_values", fixture_url)
+    eq(session.state.columns[2], "姓名", "original column name")
+    eq(session.state.rows[1][2], "Alice", "original stored value")
+    assert_edit_targets(session, "姓名")
+  end)
+end
+
+for keyword, stored in pairs({
+  CURRENT_DATE = "stored-date",
+  CURRENT_TIME = "stored-time",
+  CURRENT_TIMESTAMP = "stored-timestamp",
+}) do
+  test("bare " .. keyword .. " expression stays read-only", function()
+    local session = open_query(
+      "SELECT id, " .. keyword .. " FROM projection_values", fixture_url)
+    eq(session.state.columns[2], keyword, "expression output name")
+    assert(session.state.rows[1][2] ~= stored,
+      "bare expression must not display the same-named stored column")
+    eq(session.state.readonly, true, "expression must not be editable")
+    eq(session.state.table_name, nil, "no mutation table for an expression")
+    eq(view._is_editable(session), false, "grid edit actions stay disabled")
+  end)
+
+  test("quoted and qualified " .. keyword .. " columns stay editable",
+  function()
+    for _, projection in ipairs({ '"' .. keyword .. '"', "p." .. keyword }) do
+      local session = open_query(
+        "SELECT id, " .. projection .. " FROM projection_values p",
+        fixture_url)
+      eq(session.state.rows[1][2], stored, "real stored column value")
+      assert_edit_targets(session, keyword)
+    end
+  end)
+end
+
+test("SQLite ordinary keyword-named columns stay editable", function()
+  for _, column in ipairs({ "user", "true", "false" }) do
+    local session = open_query(
+      "SELECT id, " .. column .. " FROM projection_values", fixture_url)
+    eq(session.state.rows[1][2], "stored-" .. column, "stored column value")
+    assert_edit_targets(session, column)
+  end
+end)
+
 cleanup_grids()
+vim.fn.delete(fixture)
 
 print(string.format("projection_edit_safety_spec: %d passed, %d failed", pass, fail))
 if fail > 0 then os.exit(1) end

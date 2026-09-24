@@ -185,10 +185,84 @@ test("resolve_query: MySQL backtick projected columns keep editable table metada
   eq(tbl, "orders")
 end)
 
-test("resolve_query: MySQL double-quoted projection stays read-only", function()
+test("resolve_query: MySQL ANSI_QUOTES columns stay editable", function()
   local spec, tbl = grip._resolve_query('SELECT "id", "total" FROM orders', 50, "mysql")
   assert(spec, "spec should not be nil")
-  eq(tbl, nil, "double quotes may be strings without ANSI_QUOTES")
+  eq(tbl, "orders", "the adapter enables ANSI_QUOTES before each query")
+end)
+
+test("resolve_query: Unicode direct columns stay editable", function()
+  for _, projection in ipairs({ "姓名", '"姓名"', "o.姓名", "name姓名2" }) do
+    local _, tbl = grip._resolve_query(
+      "SELECT id, " .. projection .. " FROM orders o", 50, "sqlite")
+    eq(tbl, "orders", projection)
+  end
+end)
+
+test("resolve_query: bare value keywords stay read-only", function()
+  local cases = {
+    sqlite = { "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "NULL" },
+    postgresql = {
+      "LOCALTIME", "LOCALTIMESTAMP", "CURRENT_CATALOG", "CURRENT_ROLE",
+      "CURRENT_SCHEMA", "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER",
+      "TRUE", "FALSE",
+    },
+    mysql = {
+      "CURRENT_USER", "CURRENT_ROLE", "LOCALTIME", "LOCALTIMESTAMP",
+      "UTC_DATE", "UTC_TIME", "UTC_TIMESTAMP", "TRUE", "FALSE",
+    },
+    sqlserver = { "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER" },
+  }
+  for kind, keywords in pairs(cases) do
+    for _, keyword in ipairs(keywords) do
+      local _, tbl = grip._resolve_query(
+        "SELECT id, " .. keyword:lower() .. " FROM orders", 50, kind)
+      eq(tbl, nil, kind .. ": " .. keyword)
+    end
+  end
+end)
+
+test("resolve_query: quoted or qualified keyword columns stay editable",
+function()
+  for _, projection in ipairs({
+    '"CURRENT_TIMESTAMP"', "`CURRENT_DATE`", "[CURRENT_TIME]",
+    "o.CURRENT_TIMESTAMP", "o.CURRENT_DATE", "o.CURRENT_TIME",
+    "user", "true", "false",
+  }) do
+    local _, tbl = grip._resolve_query(
+      "SELECT id, " .. projection .. " FROM orders o", 50, "sqlite")
+    eq(tbl, "orders", projection)
+  end
+end)
+
+test("resolve_query: MySQL executable comments stay read-only", function()
+  for _, comment in ipairs({
+    "/*! AS status */", "/*!80000 AS status */", "/*M! AS status */",
+    "/*M!100100 AS status */",
+  }) do
+    local _, tbl = grip._resolve_query(
+      "SELECT id, total " .. comment .. " FROM orders", 50, "mysql")
+    eq(tbl, nil, comment)
+  end
+end)
+
+test("resolve_query: MySQL double minus arithmetic stays read-only",
+function()
+  local _, tbl = grip._resolve_query(
+    "SELECT id, total--1 AS status\nFROM orders", 50, "mysql")
+  eq(tbl, nil, "-- without following whitespace is not a MySQL comment")
+end)
+
+test("resolve_query: ordinary projection comments remain supported",
+function()
+  for _, projection in ipairs({
+    "id, total /* ordinary comment */",
+    "id, total -- ordinary comment\n",
+  }) do
+    local _, tbl = grip._resolve_query(
+      "SELECT " .. projection .. " FROM orders", 50, "mysql")
+    eq(tbl, "orders", projection)
+  end
 end)
 
 test("resolve_query: aliased projected column does not expose editable table", function()
