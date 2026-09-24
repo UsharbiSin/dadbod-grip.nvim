@@ -106,6 +106,127 @@ test("resolve_query: WITH returns raw spec", function()
   assert(spec, "spec should not be nil")
 end)
 
+test("resolve_query: WITH extracts a single outer base table", function()
+  local sql = [[
+WITH role_id AS (
+  SELECT id
+  FROM users
+  WHERE active = 1
+)
+SELECT *
+FROM orders
+WHERE user_id IN (SELECT id FROM role_id);
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, "orders", "outer base table should be editable")
+end)
+
+test("resolve_query: WITH outer CTE reference stays read-only", function()
+  local spec, tbl = grip._resolve_query(
+    "WITH active_users AS (SELECT * FROM users) SELECT * FROM active_users",
+    50
+  )
+  assert(spec, "spec should not be nil")
+  eq(tbl, nil, "a CTE relation is not a directly editable base table")
+end)
+
+test("resolve_query: WITH outer JOIN stays read-only", function()
+  local sql = [[
+WITH ids AS (SELECT id FROM users)
+SELECT o.*, u.name
+FROM orders o
+JOIN users u ON u.id = o.user_id
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, nil, "JOIN results are ambiguous")
+end)
+
+test("resolve_query: WITH outer GROUP BY stays read-only", function()
+  local sql = [[
+WITH ids AS (SELECT id FROM users)
+SELECT user_id, COUNT(*)
+FROM orders
+GROUP BY user_id
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, nil, "GROUP BY changes row identity")
+end)
+
+test("resolve_query: WITH outer aggregate without GROUP BY stays read-only", function()
+  local sql = [[
+WITH ids AS (SELECT id FROM users)
+SELECT id, COUNT(*) AS n
+FROM orders
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, nil, "aggregate projections do not preserve one row per base-table row")
+end)
+
+test("resolve_query: WITH outer UNION stays read-only", function()
+  local sql = [[
+WITH ids AS (SELECT id FROM users)
+SELECT * FROM orders
+UNION ALL
+SELECT * FROM archived_orders
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, nil, "set-operation results are not directly editable")
+end)
+
+test("resolve_query: WITH multi-statement input stays read-only", function()
+  local sql = [[
+WITH ids AS (SELECT id FROM users)
+SELECT * FROM orders;
+SELECT * FROM users;
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, nil, "multiple statements must not inherit editable table metadata")
+end)
+
+test("resolve_query: WITH supports multiple CTEs before a base-table SELECT", function()
+  local sql = [[
+WITH user_ids AS (SELECT id FROM users),
+     paid_orders AS (SELECT id FROM orders WHERE paid = 1)
+SELECT *
+FROM shipments AS s
+WHERE s.order_id IN (SELECT id FROM paid_orders)
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, "shipments", "multiple CTEs should not hide the outer base table")
+end)
+
+test("resolve_query: WITH ignores PostgreSQL dollar-quoted parentheses", function()
+  local sql = [=[
+WITH note AS (
+  SELECT $$) SELECT * FROM fake $$ AS body
+)
+SELECT *
+FROM orders
+]=]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, "orders", "dollar-quoted text must not escape the CTE body")
+end)
+
+test("resolve_query: WITH supports quoted schema-qualified outer table", function()
+  local sql = [[
+WITH ids AS (SELECT id FROM users)
+SELECT *
+FROM "sales"."Order" AS o
+WHERE o.id IN (SELECT id FROM ids)
+]]
+  local spec, tbl = grip._resolve_query(sql, 50)
+  assert(spec, "spec should not be nil")
+  eq(tbl, "sales.Order", "quoted outer base table should be unquoted")
+end)
+
 test("resolve_query: TABLE extracts table name", function()
   local spec, tbl = grip._resolve_query("TABLE orders", 50)
   assert(spec, "spec should not be nil")

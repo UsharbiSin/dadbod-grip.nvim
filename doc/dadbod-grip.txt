@@ -782,6 +782,12 @@ history. Press `U` to reset to the original state in one step.
 Read-only mode is auto-detected when no primary key exists on the table
 (grip needs PKs for WHERE clauses in UPDATE/DELETE statements).
 
+A `WITH` query can stay editable when its outer SELECT reads from exactly one
+real base table, every primary-key column is present in the result, and the
+connection is writable. Results stay read-only when the outer query reads from
+a CTE relation, joins multiple relations, groups rows, uses UNION/INTERSECT/
+EXCEPT, omits any primary-key column, or runs on a read-only connection.
+
 Full-buffer cell editor ~
                                                         *grip-cell-buffer*
 Press `gB` on a cell to open its value in a real split buffer (named

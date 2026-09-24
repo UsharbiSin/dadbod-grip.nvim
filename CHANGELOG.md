@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Read-only `WITH` queries can remain editable when the outer `SELECT` maps unambiguously to one
+  real base table, the result includes every primary-key column, and the connection is writable.
+  CTE-backed relations, joins, grouping, set operations, missing primary keys, and read-only
+  connections remain read-only.
+
 ## [3.11.0] - 2026-08-31
 
 ### Added

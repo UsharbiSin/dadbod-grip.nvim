@@ -110,8 +110,263 @@ local function deny_if_readonly(cmd_name, url)
   return require("dadbod-grip.connections").deny_if_readonly(cmd_name, url)
 end
 
+-- Tokenize only the top-level structure of a SELECT/WITH statement.
+-- Parenthesized bodies are collapsed to lparen/rparen markers so CTE bodies and
+-- subqueries cannot be mistaken for the outer query. Strings/comments are
+-- skipped, while quoted identifiers are retained without their delimiters.
+local function top_level_sql_tokens(sql_text)
+  local tokens = {}
+  local depth = 0
+  local i = 1
+  local len = #sql_text
+
+  local function add(kind, text)
+    if depth ~= 0 then return end
+    tokens[#tokens + 1] = {
+      kind = kind,
+      text = text,
+      upper = kind == "word" and text:upper() or nil,
+    }
+  end
+
+  while i <= len do
+    local ch = sql_text:sub(i, i)
+    local next_ch = sql_text:sub(i + 1, i + 1)
+
+    if ch:match("%s") then
+      i = i + 1
+    elseif ch == "-" and next_ch == "-" then
+      local newline = sql_text:find("\n", i + 2, true)
+      i = newline and (newline + 1) or (len + 1)
+    elseif ch == "#" then
+      local newline = sql_text:find("\n", i + 1, true)
+      i = newline and (newline + 1) or (len + 1)
+    elseif ch == "/" and next_ch == "*" then
+      local close = sql_text:find("*/", i + 2, true)
+      i = close and (close + 2) or (len + 1)
+    elseif ch == "$" then
+      local tag_end = sql_text:find("$", i + 1, true)
+      local matched = false
+      if tag_end then
+        local inner_tag = sql_text:sub(i + 1, tag_end - 1)
+        if inner_tag:match("^[%a_][%w_]*$") or inner_tag == "" then
+          local tag = sql_text:sub(i, tag_end)
+          local close = sql_text:find(tag, tag_end + 1, true)
+          if close then
+            i = close + #tag
+            matched = true
+          end
+        end
+      end
+      if not matched then i = i + 1 end
+    elseif ch == "'" then
+      i = i + 1
+      while i <= len do
+        local current = sql_text:sub(i, i)
+        if current == "\\" then
+          i = i + 2
+        elseif current == "'" and sql_text:sub(i + 1, i + 1) == "'" then
+          i = i + 2
+        elseif current == "'" then
+          i = i + 1
+          break
+        else
+          i = i + 1
+        end
+      end
+    elseif ch == '"' or ch == "`" then
+      local quote = ch
+      local start_pos = i
+      local value = {}
+      i = i + 1
+      while i <= len do
+        local current = sql_text:sub(i, i)
+        if current == quote and sql_text:sub(i + 1, i + 1) == quote then
+          value[#value + 1] = quote
+          i = i + 2
+        elseif current == quote then
+          i = i + 1
+          break
+        else
+          value[#value + 1] = current
+          i = i + 1
+        end
+      end
+      add("ident", table.concat(value), start_pos, i - 1)
+    elseif ch == "[" then
+      local start_pos = i
+      local close = sql_text:find("]", i + 1, true)
+      if not close then break end
+      add("ident", sql_text:sub(i + 1, close - 1), start_pos, close)
+      i = close + 1
+    elseif ch == "(" then
+      if depth == 0 then add("lparen", ch, i, i) end
+      depth = depth + 1
+      i = i + 1
+    elseif ch == ")" then
+      if depth > 0 then depth = depth - 1 end
+      if depth == 0 then add("rparen", ch, i, i) end
+      i = i + 1
+    elseif ch == "," then
+      add("comma", ch, i, i)
+      i = i + 1
+    elseif ch == "." then
+      add("dot", ch, i, i)
+      i = i + 1
+    elseif ch == ";" then
+      add("semicolon", ch, i, i)
+      i = i + 1
+    elseif ch:match("[%a_]") then
+      local start_pos = i
+      i = i + 1
+      while i <= len and sql_text:sub(i, i):match("[%w_$]") do
+        i = i + 1
+      end
+      add("word", sql_text:sub(start_pos, i - 1), start_pos, i - 1)
+    else
+      i = i + 1
+    end
+  end
+
+  return tokens
+end
+
+-- Return the real base table of the outer SELECT in a WITH query only when the
+-- mapping is unambiguous enough for row editing. Anything that changes row
+-- identity (joins, set operations, grouping) or selects from a CTE stays nil.
+local function cte_outer_base_table(sql_text)
+  local tokens = top_level_sql_tokens(sql_text)
+  if #tokens == 0 or tokens[1].upper ~= "WITH" then return nil end
+  for pos, token in ipairs(tokens) do
+    if token.kind == "semicolon" and pos < #tokens then return nil end
+  end
+
+  local cte_names = {}
+  local index = 2
+  if tokens[index] and tokens[index].upper == "RECURSIVE" then index = index + 1 end
+
+  while tokens[index] do
+    local name = tokens[index]
+    if name.kind ~= "word" and name.kind ~= "ident" then return nil end
+    cte_names[name.text:lower()] = true
+    index = index + 1
+
+    -- Optional CTE column list is collapsed to one parenthesized marker pair.
+    if tokens[index] and tokens[index].kind == "lparen" then
+      if not tokens[index + 1] or tokens[index + 1].kind ~= "rparen" then return nil end
+      index = index + 2
+    end
+
+    if not tokens[index] or tokens[index].upper ~= "AS" then return nil end
+    index = index + 1
+
+    -- PostgreSQL accepts [NOT] MATERIALIZED before the CTE body.
+    if tokens[index] and tokens[index].upper == "NOT"
+        and tokens[index + 1] and tokens[index + 1].upper == "MATERIALIZED" then
+      index = index + 2
+    elseif tokens[index] and tokens[index].upper == "MATERIALIZED" then
+      index = index + 1
+    end
+
+    if not tokens[index] or tokens[index].kind ~= "lparen"
+        or not tokens[index + 1] or tokens[index + 1].kind ~= "rparen" then
+      return nil
+    end
+    index = index + 2
+
+    if tokens[index] and tokens[index].kind == "comma" then
+      index = index + 1
+    else
+      break
+    end
+  end
+
+  if not tokens[index] or tokens[index].upper ~= "SELECT" then return nil end
+  local main_select = index
+
+  local disallowed = {
+    JOIN = true,
+    UNION = true,
+    INTERSECT = true,
+    EXCEPT = true,
+    GROUP = true,
+    HAVING = true,
+    WINDOW = true,
+    QUALIFY = true,
+  }
+  local from_index
+  for pos = main_select + 1, #tokens do
+    local token = tokens[pos]
+    if token.kind == "word" then
+      if disallowed[token.upper] then return nil end
+      if not from_index and token.upper == "FROM" then from_index = pos end
+    end
+  end
+  if not from_index then return nil end
+
+  -- Be conservative about projections that call functions or contain nested
+  -- expressions. Aggregate/window expressions can preserve a primary-key name
+  -- while no longer representing one base-table row.
+  for pos = main_select + 1, from_index - 1 do
+    if tokens[pos].kind == "lparen" then return nil end
+  end
+
+  local clause_keywords = {
+    WHERE = true,
+    ORDER = true,
+    LIMIT = true,
+    OFFSET = true,
+    FOR = true,
+    LOCK = true,
+  }
+  local clause_end = #tokens + 1
+  for pos = from_index + 1, #tokens do
+    local token = tokens[pos]
+    if token.kind == "word" and clause_keywords[token.upper] then
+      clause_end = pos
+      break
+    elseif token.kind == "semicolon" then
+      clause_end = pos
+      break
+    end
+  end
+
+  local pos = from_index + 1
+  local first = tokens[pos]
+  if not first or (first.kind ~= "word" and first.kind ~= "ident") then return nil end
+
+  local parts = { first.text }
+  pos = pos + 1
+  while pos < clause_end and tokens[pos].kind == "dot" do
+    local part = tokens[pos + 1]
+    if not part or (part.kind ~= "word" and part.kind ~= "ident") then return nil end
+    parts[#parts + 1] = part.text
+    pos = pos + 2
+  end
+
+  -- FROM may have one optional alias, with or without AS. Anything else means
+  -- the outer relation is more complex than a single editable base table.
+  local remaining = clause_end - pos
+  if remaining == 1 then
+    local alias = tokens[pos]
+    if alias.kind ~= "word" and alias.kind ~= "ident" then return nil end
+  elseif remaining == 2 then
+    local as_token = tokens[pos]
+    local alias = tokens[pos + 1]
+    if as_token.upper ~= "AS" or (alias.kind ~= "word" and alias.kind ~= "ident") then
+      return nil
+    end
+  elseif remaining ~= 0 then
+    return nil
+  end
+
+  if #parts == 1 and cte_names[parts[1]:lower()] then return nil end
+  return table.concat(parts, ".")
+end
+
 -- Decide the query spec for a given :Grip argument.
--- Returns (spec, table_name, file_path) or (nil, err_string).
+-- Returns (spec, table_name, file_path, mutation_sql, require_result_pks)
+-- or (nil, err_string).
 local function resolve_query(arg, page_size)
   if not arg or arg == "" then
     arg = vim.fn.expand("<cword>")
@@ -188,7 +443,8 @@ local function resolve_query(arg, page_size)
         or stripped:find("%f[%u]INSERT%f[^%u]") then
       return nil, nil, nil, arg
     end
-    return query.new_raw(arg, page_size), nil
+    local table_name = cte_outer_base_table(arg)
+    return query.new_raw(arg, page_size), table_name, nil, nil, table_name ~= nil
   end
   -- REPLACE INTO (MySQL/SQLite): route through mutation preview like INSERT
   if upper == "REPLACE" then
@@ -476,7 +732,7 @@ end
 --- Returns ONE table, never a bare `nil, err`: ui.blocking() forwards its fn's
 --- returns through table.unpack, which drops everything after a leading nil.
 --- @return table { result: table|nil, err: string|nil, elapsed_ms: number }
-local function fetch_refresh(url, query_sql, table_name)
+local function fetch_refresh(url, query_sql, table_name, require_result_pks)
   local t0 = vim.uv.hrtime()
   local result, err = db.query(query_sql, url)
   local elapsed_ms = math.floor((vim.uv.hrtime() - t0) / 1e6)
@@ -492,11 +748,25 @@ local function fetch_refresh(url, query_sql, table_name)
     end
   end
 
-  -- Re-fetch primary keys
+  -- Re-fetch primary keys. CTE results are editable only when every primary
+  -- key column is present in the projected result, otherwise row identity is
+  -- not available for safe UPDATE/DELETE statements.
   result.readonly = db.is_readonly(url)
   if table_name and not result.readonly then
     local pks, pk_err = db.get_primary_keys(table_name, url)
     result.primary_keys = (pk_err == nil) and pks or {}
+    if require_result_pks and #result.primary_keys > 0 then
+      local columns = {}
+      for _, column in ipairs(result.columns or {}) do
+        columns[tostring(column):lower()] = true
+      end
+      for _, pk in ipairs(result.primary_keys) do
+        if not columns[tostring(pk):lower()] then
+          result.primary_keys = {}
+          break
+        end
+      end
+    end
   else
     result.primary_keys = {}
   end
@@ -524,9 +794,9 @@ local function apply_refresh(bufnr, fetched)
   view.render(bufnr, new_state)
 end
 
-local function do_refresh(bufnr, url, query_sql, table_name)
+local function do_refresh(bufnr, url, query_sql, table_name, require_result_pks)
   local fetched = ui.blocking("  querying " .. spinner_label(table_name) .. "...", function()
-    return fetch_refresh(url, query_sql, table_name)
+    return fetch_refresh(url, query_sql, table_name, require_result_pks)
   end)
   apply_refresh(bufnr, fetched)
 end
@@ -882,7 +1152,8 @@ function M.open(arg, url, opts)
   end
 
   -- Resolve query spec (must happen before connection check for file-as-table)
-  local spec, table_name_arg, file_path, mutation_sql = resolve_query(arg, OPTS.limit)
+  local spec, table_name_arg, file_path, mutation_sql, require_result_pks =
+    resolve_query(arg, OPTS.limit)
 
   -- Handle destructive statements (UPDATE/DELETE/INSERT/DDL)
   if mutation_sql then
@@ -988,7 +1259,7 @@ function M.open(arg, url, opts)
   -- before the grid ever appeared -- which reads as the plugin hanging.
   local fetched, total_rows
   ui.blocking("  querying " .. short_label .. "...", function()
-    fetched = fetch_refresh(conn, query_sql, table_name_arg)
+    fetched = fetch_refresh(conn, query_sql, table_name_arg, require_result_pks)
     if not fetched.result then return end
     local count_result = db.query(query.build_count_sql(spec), conn)
     if count_result and count_result.rows[1] then
@@ -1062,7 +1333,7 @@ function M.open(arg, url, opts)
       -- Read current table name from session state (may have been updated by rename)
       local current_table = (s.state and s.state.table_name) or table_name_arg
       local sql_str = s.query_spec and query.build_sql(s.query_spec) or query_sql
-      do_refresh(bid, conn, sql_str, current_table)
+      do_refresh(bid, conn, sql_str, current_table, require_result_pks)
     end,
     on_requery = function(bid, new_spec)
       local s = view._sessions[bid]
@@ -1089,7 +1360,7 @@ function M.open(arg, url, opts)
         end
 
         new_sql = query.build_sql(new_spec)
-        page_fetch = fetch_refresh(conn, new_sql, table_name_arg)
+        page_fetch = fetch_refresh(conn, new_sql, table_name_arg, require_result_pks)
       end)
 
       s.query_spec = new_spec
