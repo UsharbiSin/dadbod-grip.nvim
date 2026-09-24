@@ -12,6 +12,7 @@ local ui     = require("dadbod-grip.ui")
 local explain = require("dadbod-grip.explain")
 local filetypes = require("dadbod-grip.filetypes")
 local importer = require("dadbod-grip.importer")
+local adapters = require("dadbod-grip.adapters")
 
 local M = {}
 M._version = require("dadbod-grip.version")
@@ -110,9 +111,141 @@ local function deny_if_readonly(cmd_name, url)
   return require("dadbod-grip.connections").deny_if_readonly(cmd_name, url)
 end
 
+-- Return true only when a SELECT list contains direct column references.
+-- Editing uses result column names as mutation column names, so aliases and
+-- expressions must not expose base-table metadata unless column lineage is
+-- known. This intentionally accepts a small, dialect-neutral subset:
+--   *, alias.*, col, alias.col, schema.table.col
+-- with optional DISTINCT/ALL and comma-separated items.
+local function select_projection_is_direct(sql_text, adapter_kind)
+  local tokens = {}
+  local i = 1
+  local len = #sql_text
+
+  local function skip_space()
+    while i <= len and sql_text:sub(i, i):match("%s") do i = i + 1 end
+  end
+
+  local function read_word()
+    local start = i
+    if not sql_text:sub(i, i):match("[%a_]") then return nil end
+    i = i + 1
+    while i <= len and sql_text:sub(i, i):match("[%w_$]") do i = i + 1 end
+    return sql_text:sub(start, i - 1)
+  end
+
+  local function read_quoted(quote)
+    local close_quote = quote == "[" and "]" or quote
+    local value = {}
+    i = i + 1
+    while i <= len do
+      local ch = sql_text:sub(i, i)
+      if ch == close_quote then
+        if sql_text:sub(i + 1, i + 1) == close_quote then
+          value[#value + 1] = close_quote
+          i = i + 2
+        else
+          i = i + 1
+          return table.concat(value)
+        end
+      else
+        value[#value + 1] = ch
+        i = i + 1
+      end
+    end
+    return nil
+  end
+
+  skip_space()
+  local first = read_word()
+  if not first or first:upper() ~= "SELECT" then return false end
+
+  while i <= len do
+    skip_space()
+    if i > len then return false end
+
+    local ch = sql_text:sub(i, i)
+    local next_ch = sql_text:sub(i + 1, i + 1)
+
+    if ch == "-" and next_ch == "-" then
+      local newline = sql_text:find("\n", i + 2, true)
+      i = newline and (newline + 1) or (len + 1)
+    elseif ch == "/" and next_ch == "*" then
+      local close = sql_text:find("*/", i + 2, true)
+      if not close then return false end
+      i = close + 2
+    elseif ch == '"' or ch == "`" or ch == "[" then
+      -- MySQL/MariaDB treat double quotes as string delimiters unless
+      -- ANSI_QUOTES is enabled. The adapter cannot assume that SQL mode, so
+      -- double-quoted projections stay read-only there.
+      if ch == '"' and adapter_kind == "mysql" then return false end
+      local ident = read_quoted(ch)
+      if not ident then return false end
+      tokens[#tokens + 1] = { kind = "ident", text = ident }
+    elseif ch:match("[%a_]") then
+      local word = read_word()
+      if word:upper() == "FROM" then break end
+      tokens[#tokens + 1] = { kind = "ident", text = word, upper = word:upper() }
+    elseif ch == "*" then
+      tokens[#tokens + 1] = { kind = "star" }
+      i = i + 1
+    elseif ch == "." then
+      tokens[#tokens + 1] = { kind = "dot" }
+      i = i + 1
+    elseif ch == "," then
+      tokens[#tokens + 1] = { kind = "comma" }
+      i = i + 1
+    else
+      -- Literals, operators, function calls, casts, and other expressions are
+      -- deliberately not considered editable projections.
+      return false
+    end
+  end
+
+  if #tokens == 0 then return false end
+
+  local pos = 1
+  if tokens[pos].kind == "ident"
+      and (tokens[pos].upper == "DISTINCT" or tokens[pos].upper == "ALL") then
+    pos = pos + 1
+  end
+  if pos > #tokens then return false end
+
+  local function consume_item()
+    local token = tokens[pos]
+    if not token then return false end
+
+    if token.kind == "star" then
+      pos = pos + 1
+      return true
+    end
+
+    if token.kind ~= "ident" then return false end
+    pos = pos + 1
+
+    while tokens[pos] and tokens[pos].kind == "dot" do
+      pos = pos + 1
+      local part = tokens[pos]
+      if not part or (part.kind ~= "ident" and part.kind ~= "star") then return false end
+      pos = pos + 1
+      if part.kind == "star" and tokens[pos] and tokens[pos].kind == "dot" then return false end
+    end
+    return true
+  end
+
+  if not consume_item() then return false end
+  while pos <= #tokens do
+    if tokens[pos].kind ~= "comma" then return false end
+    pos = pos + 1
+    if not consume_item() then return false end
+  end
+
+  return true
+end
+
 -- Decide the query spec for a given :Grip argument.
 -- Returns (spec, table_name, file_path) or (nil, err_string).
-local function resolve_query(arg, page_size)
+local function resolve_query(arg, page_size, adapter_kind)
   if not arg or arg == "" then
     arg = vim.fn.expand("<cword>")
   end
@@ -151,9 +284,12 @@ local function resolve_query(arg, page_size)
         or flat:match("^%s*[Tt][Aa][Bb][Ll][Ee]%s+([%w_%.]+)")
       if raw then table_name = sql.unquote_ident(raw) end
     else
-      -- SELECT: extract from FROM clause for simple single-table queries
+      -- SELECT: extract from FROM clause for simple single-table queries.
+      -- Only expose table metadata when projected columns map directly back to
+      -- base-table columns; mutation generation uses result column names.
+      local projection_is_direct = select_projection_is_direct(arg, adapter_kind)
       local after_from = flat:match("[Ff][Rr][Oo][Mm]%s+(.*)")
-      if after_from and not after_from:match("^%s*%(") then
+      if projection_is_direct and after_from and not after_from:match("^%s*%(") then
         -- Match full token including quotes (handles "schema"."table" compound)
         local full_token = after_from:match('^"[^"]+"%.%s*"[^"]+"')
           or after_from:match('^`[^`]+`%.%s*`[^`]+`')
@@ -881,8 +1017,11 @@ function M.open(arg, url, opts)
     if not conn or conn == "" then conn = vim.g.db end
   end
 
-  -- Resolve query spec (must happen before connection check for file-as-table)
-  local spec, table_name_arg, file_path, mutation_sql = resolve_query(arg, OPTS.limit)
+  -- Resolve query spec (must happen before connection check for file-as-table).
+  -- Pass the adapter kind when available so projection parsing can stay
+  -- conservative around dialect-specific identifier quoting.
+  local adapter_kind = adapters.kind(db.resolved_url(conn))
+  local spec, table_name_arg, file_path, mutation_sql = resolve_query(arg, OPTS.limit, adapter_kind)
 
   -- Handle destructive statements (UPDATE/DELETE/INSERT/DDL)
   if mutation_sql then

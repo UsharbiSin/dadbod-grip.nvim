@@ -780,7 +780,10 @@ Multi-level undo: every edit operation pushes the previous state onto a
 history. Press `U` to reset to the original state in one step.
 
 Read-only mode is auto-detected when no primary key exists on the table
-(grip needs PKs for WHERE clauses in UPDATE/DELETE statements).
+(grip needs PKs for WHERE clauses in UPDATE/DELETE statements), or when a
+SELECT projection uses aliases or expressions that cannot be mapped directly
+back to base-table columns. Direct column projections and wildcards remain
+editable when the normal primary-key requirements are met.
 
 Full-buffer cell editor ~
                                                         *grip-cell-buffer*

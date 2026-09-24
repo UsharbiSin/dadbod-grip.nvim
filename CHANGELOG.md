@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Query grids now stay read-only when a `SELECT` projection contains aliases or computed
+  expressions that cannot be mapped safely back to base-table columns, preventing edits from
+  targeting a different same-named column (#77).
+
 ## [3.11.0] - 2026-08-31
 
 ### Added
