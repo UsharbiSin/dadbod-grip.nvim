@@ -181,6 +181,11 @@ the whole grid by one row every time scrolling crosses that threshold.
 A winbar costs one screen line per grid window; set `sticky_header = false`
 to reclaim it for good (the badges then render as before).
 
+The shortcut hints below the result fit into two rows for each window's text
+width. They use configured keys and stay in place during horizontal table
+scrolling. Narrow windows prioritize core actions and help; `…` marks omitted
+hints when it fits. These rows scroll vertically with the end of the result.
+
 AI SQL generation (optional): >lua
   require("dadbod-grip").setup({
     ai = {
