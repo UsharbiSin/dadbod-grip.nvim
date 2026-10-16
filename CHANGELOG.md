@@ -14,11 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window and the shared workspace, using effective configured key hints.
 - Existing welcome shortcuts are now cataloged and support remap/disable
   settings. Their default keys and the hidden Chonk cameo are preserved.
-- `:GripZoom` and the configurable `gz` shortcut maximize the current split
-  and restore its previous sizes without closing windows or discarding buffers.
-  Zoom preserves unsaved SQL, staged results, and sidebar state, and fits
-  surviving panes after a resize or split change. The command is available through the palette
-  and in-editor help.
 
 ### Changed
 
@@ -26,6 +21,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It does not run the query automatically.
 - In-app help uses the current pane's action catalog, effective keys, and
   contextual number-key behavior. Query-pad help describes its own actions.
+
+## [3.13.0] - 2026-10-16
+
+### Fixed
+
+- Connection variables read from `.env` files now support whitespace-separated
+  inline comments after quoted or unquoted values. Quoted hashes and unspaced
+  hashes stay literal, and malformed quoted tails are preserved rather than
+  silently truncated. File values still take precedence over process variables.
+
+### Added
+
+- `:GripZoom` and the configurable `gz` shortcut maximize the current split
+  and restore its previous sizes without closing windows or discarding buffers.
+  Zoom preserves unsaved SQL, staged results, and sidebar state, and fits
+  surviving panes after a resize or split change. The command is available through the palette
+  and in-editor help.
 
 ## [3.12.0] - 2026-10-16
 
@@ -707,7 +719,8 @@ older tags are left in place so anyone pinned to them keeps working.
 - **joryeugene** — SQL Server adapter, PostgreSQL routines in the schema sidebar, focused ER diagram
   ([PR #17](https://github.com/joryeugene/dadbod-grip.nvim/pull/17)).
 
-[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.12.0...HEAD
+[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...HEAD
+[3.13.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.12.0
 [3.11.1]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.11.1
 [3.11.0]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.11.0
