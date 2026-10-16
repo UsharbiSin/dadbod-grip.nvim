@@ -628,6 +628,8 @@ local function setup_keymaps(url)
   -- schema_browser: close sidebar (from inside; gb elsewhere opens/focuses it)
   kmap("schema_browser", function() M.close() end)
 
+  kmap("zoom", function() require("dadbod-grip.zoom").toggle() end)
+
   -- welcome: go to welcome screen (home)
   kmap("welcome", function() require("dadbod-grip").open_welcome() end)
 
@@ -787,6 +789,7 @@ local function setup_keymaps(url)
       " ─────────────────────────────────────────",
       "",
       "  Navigation",
+      string.format("  %-9s Zoom pane / restore layout", km.get("zoom") or ":GripZoom"),
       "  j/k       Move between items",
       "  <CR>      Open object / toggle group",
       "  S-CR      Open table in new split",

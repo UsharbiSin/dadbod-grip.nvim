@@ -133,10 +133,13 @@ These commands cover the normal path:
 | `:GripExport` | Exports the current page or every matching row. |
 | `:GripImport` | Previews and stages CSV, TSV, or JSON rows from the clipboard or `!command`. |
 | `:GripHome` | Returns to the welcome screen. |
+| `:GripZoom` | Maximizes the current pane or restores its split layout. |
 
 In the query pad, `<C-CR>` runs SQL and `gA` generates SQL. In the grid, `f` filters by the current cell, `s` sorts the current column, `gf` follows a foreign key, and `gE` exports to the clipboard.
 
 The complete command and keymap reference lives in `:help dadbod-grip`. The [documentation website](https://jorypestorious.com/dadbod-grip-web/) provides task-focused guides and screenshots.
+
+Use `gb` to focus the sidebar, then `<Esc>` to close it. Press `gz` in the grid, query pad, sidebar, or welcome screen to zoom that pane, and press it again to restore the layout. Native `<C-w>` window navigation still works, and `<C-p>` opens the searchable command palette in the grid, query pad, and sidebar.
 
 ## Files and federation
 

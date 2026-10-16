@@ -55,6 +55,10 @@ add("navigation", all, normal, {
   { "schema_browser", "gb", "Opens, focuses, or closes the schema browser." },
 })
 
+add("navigation", { "grid", "query_pad", "sidebar", "welcome" }, normal, {
+  { "zoom", "gz", "Zooms the current pane or restores its split layout." },
+})
+
 add("navigation", { "query_pad", "sidebar" }, normal, {
   { "goto_grid", "gw", "Focuses the grid window." },
   { "open_notebook", "gn", "Opens a SQL or Markdown notebook in the query pad." },

@@ -106,6 +106,14 @@
       "modes": ["n"]
     },
     {
+      "action": "zoom",
+      "default": "gz",
+      "description": "Zooms the current pane or restores its split layout.",
+      "category": "navigation",
+      "surfaces": ["grid", "query_pad", "sidebar", "welcome"],
+      "modes": ["n"]
+    },
+    {
       "action": "goto_grid",
       "default": "gw",
       "description": "Focuses the grid window.",

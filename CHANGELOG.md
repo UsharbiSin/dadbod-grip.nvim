@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `:GripZoom` and the configurable `gz` shortcut maximize the current split
+  and restore its previous sizes without closing windows or discarding buffers.
+  Zoom preserves unsaved SQL, staged results, and sidebar state, and fits
+  surviving panes after a resize or split change. The command is available through the palette
+  and in-editor help.
+
 ## [3.12.0] - 2026-10-16
 
 ### Added

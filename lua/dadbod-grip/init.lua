@@ -1617,6 +1617,7 @@ function M.open_welcome()
     "  1   schema sidebar           2   query pad",
     "  3   table / records          Q   this screen",
     "  4   ER diagram               5-9 stats/cols/fk/idx",
+    string.format("  %-10s zoom pane / restore layout", require("dadbod-grip.keymaps").get("zoom") or ":GripZoom"),
     "",
     "  ── Query pad ───────────────────────────────────",
     "  q       open pad             <C-CR>  run SQL block",
@@ -1732,6 +1733,9 @@ function M.open_welcome()
   local function wmap(key, fn, desc)
     vim.keymap.set("n", key, fn, { buffer = welcome_buf, silent = true, nowait = true, desc = desc })
   end
+  require("dadbod-grip.keymaps").bind("welcome", welcome_buf, "zoom", "n", function()
+    require("dadbod-grip.zoom").toggle()
+  end)
   local function do_connect()
     require("dadbod-grip.connections").pick()
   end
@@ -2488,6 +2492,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("GripHome", function()
     M.open_welcome()
   end, { desc = "Open dadbod-grip welcome screen" })
+
+  vim.api.nvim_create_user_command("GripZoom", function()
+    require("dadbod-grip.zoom").toggle()
+  end, { desc = "Zoom current pane or restore its split layout" })
 
   -- :GripToggle: close all grip windows if visible, reopen if hidden
   vim.api.nvim_create_user_command("GripToggle", function()
