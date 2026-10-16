@@ -9,11 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Welcome keeps the DBG logo and offers four actionable start rows. Enter
+  activates a row; Tab and Shift-Tab move between actions. It fits both a full
+  window and the shared workspace, using effective configured key hints.
+- Existing welcome shortcuts are now cataloged and support remap/disable
+  settings. Their default keys and the hidden Chonk cameo are preserved.
 - `:GripZoom` and the configurable `gz` shortcut maximize the current split
   and restore its previous sizes without closing windows or discarding buffers.
   Zoom preserves unsaved SQL, staged results, and sidebar state, and fits
   surviving panes after a resize or split change. The command is available through the palette
   and in-editor help.
+
+### Changed
+
+- The demo focuses its first bundled SQL block after the workspace is ready.
+  It does not run the query automatically.
+- In-app help uses the current pane's action catalog, effective keys, and
+  contextual number-key behavior. Query-pad help describes its own actions.
 
 ## [3.12.0] - 2026-10-16
 

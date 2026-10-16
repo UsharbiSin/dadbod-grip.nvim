@@ -3,7 +3,6 @@
 -- Lazy column fetching on expand.
 
 local db      = require("dadbod-grip.db")
-local VERSION = require("dadbod-grip.version")
 local ui      = require("dadbod-grip.ui")
 local esc     = require("dadbod-grip.sql").escape_literal
 
@@ -783,117 +782,7 @@ local function setup_keymaps(url)
 
   -- help: schema help popup
   kmap("help", function()
-    local lines = {
-      "",
-      "  Schema Browser",
-      " ─────────────────────────────────────────",
-      "",
-      "  Navigation",
-      string.format("  %-9s Zoom pane / restore layout", km.get("zoom") or ":GripZoom"),
-      "  j/k       Move between items",
-      "  <CR>      Open object / toggle group",
-      "  S-CR      Open table in new split",
-      "  l / zo    Expand group or table columns",
-      "  h / zc    Collapse / move to parent",
-      "  L         Expand all schema/partition levels",
-      "  H         Collapse groups and columns",
-      "  /         Search hidden names/signatures",
-      "  F         Clear filter, restore view",
-      "  zh/zl     Scroll labels horizontally",
-      "  zH/zL     Scroll labels by half a window",
-      "  0 / $     Move to start / end of label",
-      "",
-      "  Tab Views",
-      "  1         Connections picker",
-      "  2         Query pad",
-      "  3         Jump to grid / table picker",
-      "  4         ER diagram (full map)",
-      "  5         Stats view",
-      "  6         Columns view",
-      "  7         Foreign keys view",
-      "  8         Indexes view",
-      "  9         Constraints view",
-      "",
-      "  Actions",
-      "  r         Refresh schema",
-      "  y         Yank table/column name",
-      "  go        Open table, ORDER BY latest (created_at / PK)",
-      "  gT / gt   Table picker (fuzzy finder)",
-      "  gb        Close browser (gb outside: open/focus)",
-      "  gw        Jump to grid",
-      "  gC / gc   Switch connection",
-      "  gh        Query history",
-      "  gq        Saved queries",
-      "  q         Query pad",
-      "  ga        Attach external DB (DuckDB federation)",
-      "  gd        Detach attached database",
-      "  gG        ER diagram (focus table neighborhood)",
-      "  D         Drop table (confirm)",
-      "  +         Create table",
-      "  Esc       Close sidebar",
-      "  ?         Toggle this help",
-      "",
-      " ─────────────────────────────────────────",
-      "",
-      "  ╔═╦═╦═╗",
-      "  ║d║b║g║  dadbod-grip v" .. VERSION,
-      "  ╚═╩═╩═╝",
-      "",
-    }
-    local grip_win = vim.api.nvim_get_current_win()
-    local max_w = 0
-    for _, line in ipairs(lines) do max_w = math.max(max_w, #line) end
-    max_w = math.max(max_w + 2, 44)
-    local popup_buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_lines(popup_buf, 0, -1, false, lines)
-    -- Full schema help highlights
-    local ns_sh = vim.api.nvim_create_namespace("grip_schema_help_hl")
-    local function sadd(ln, group, s, e)
-      -- Missing or negative end column means "to the end of the line": add_highlight
-      -- took col_end = -1 for that, set_extmark wants end_row = ln + 1 / end_col = 0.
-      local opts = { hl_group = group }
-      if e and e >= 0 then opts.end_col = e else opts.end_row, opts.end_col = ln + 1, 0 end
-      vim.api.nvim_buf_set_extmark(popup_buf, ns_sh, ln, s or 0, opts)
-    end
-    for i, line in ipairs(lines) do
-      local ln = i - 1
-      if    line:match("^    %a") then                                           sadd(ln, "Special")
-      elseif line:find("╔═╦") or line:find("║d║") or line:find("╚═╩") then     sadd(ln, "Special")
-      elseif line:match("^%s+[─═]") then sadd(ln, "Comment")
-      elseif line:find("\xe2\x86\xb3") then sadd(ln, "Comment")   -- ↳ continuation
-      elseif line:match("^  %S") and not line:find("%s%s", 3) then sadd(ln, "Title")
-      elseif line:match("^  %S") then
-        local key_end = line:find("%s%s", 3)
-        if key_end then sadd(ln, "Identifier", 2, key_end - 1) end
-      end
-    end
-    local win = ui.info_float({
-      buf = popup_buf,
-      width = max_w,
-      height = #lines,
-      title = " Schema Help ",
-      title_pos = "center",
-      zindex = 50,
-    })
-    local function close()
-      if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
-    end
-
-    vim.api.nvim_create_autocmd("WinLeave", {
-      group  = _ag,
-      buffer = popup_buf,
-      once = true,
-      callback = function() vim.schedule(close) end,
-    })
-
-    for _, key in ipairs({ "q", "?", "<Esc>" }) do
-      vim.keymap.set("n", key, function()
-        close()
-        if vim.api.nvim_win_is_valid(grip_win) then
-          vim.api.nvim_set_current_win(grip_win)
-        end
-      end, { buffer = popup_buf })
-    end
+    require("dadbod-grip.view").show_help({ surface = "sidebar" })
   end)
 end
 

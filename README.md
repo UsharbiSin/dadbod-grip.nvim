@@ -73,6 +73,9 @@ Open the disposable demo:
 ```
 
 The demo recreates its database from the bundled seed each time, so edits cannot damage your own data.
+It opens the schema sidebar and walkthrough with the cursor inside the first SQL block. Press `<C-CR>` to run that block; opening the demo does not run it automatically. To browse a table first, press `gb`, select `rolls`, press Enter, and then press `2` to return to SQL.
+
+Run `:Grip` or `:GripHome` for the welcome screen. The existing DBG logo sits above four action rows: open the demo, connect a database, browse tables, and open SQL. Use Tab/Shift-Tab or native `j`/`k` to select a row, then press Enter. The welcome adapts to a shared workspace, and its hints reflect configured keys. These are the default bindings; no alternate preset is enabled.
 
 ### Connect to a database
 
@@ -174,6 +177,7 @@ require("dadbod-grip").setup({
 Set `open_sidebar = false` to connect directly into the main workspace. Set `completion = false` when another completion engine owns SQL suggestions. Set `ai = false` to skip SQL generation and schema preloading; the AI keys remain registered and explain that AI is disabled.
 
 All default values, picker integrations, connection fields, remappable actions, and AI-provider options live in `:help grip-config` and the [getting-started guide](https://jorypestorious.com/dadbod-grip-web/docs/getting-started).
+Welcome actions are also configurable, for example `keymaps = { welcome_next = "<F2>", welcome_activate = "<F3>" }`. Setting an action to `false` removes its mapping. Welcome keeps command fallbacks visible, and `?` shows effective keys for the current pane. The palette remains available in the grid, query pad, and sidebar.
 
 ## Safety and privacy
 

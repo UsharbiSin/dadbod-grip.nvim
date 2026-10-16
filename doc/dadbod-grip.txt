@@ -214,7 +214,7 @@ a binding entirely: >lua
 <
 Action names (stable API) with their defaults:
 
-  Shared across all surfaces ~
+  Persistent actions (surface availability is listed in keymaps.json) ~
   palette          = "<C-p>"   command palette
   help             = "?"       help popup
   er_diagram       = "gG"      ER diagram float
@@ -227,6 +227,15 @@ Action names (stable API) with their defaults:
   welcome          = "Q"       welcome / home screen
   schema_browser   = "gb"      schema sidebar (open/focus/close)
   zoom             = "gz"      zoom current pane / restore split sizes
+
+  Welcome screen ~
+  welcome_activate = "<CR>"    run the selected welcome action
+  welcome_next     = "<Tab>"   next action row
+  welcome_prev     = "<S-Tab>" previous action row
+  welcome_close    = "q"       close welcome
+  welcome_close_esc= "<Esc>"   close welcome with Escape
+  welcome_connect  = "gc"      connection picker
+  welcome_secret   = ";"       existing Chonk cameo
 
   Shared: grid + sidebar ~
   query_pad        = "q"       open query pad
@@ -575,12 +584,25 @@ All commands are global and available after the plugin loads.
   the disposable supplier database is attached automatically as `supplier`.
   Demo files live under stdpath("data") and never overwrite the current
   project's .grip directory.
+  The pad focuses the first bundled SQL block without executing it. Press
+  <C-CR> to run it, or gb, select rolls, and press Enter to browse a table
+  first. From that table, 2 returns to the walkthrough's SQL pad.
 
                                                                 *:GripHome*
 :GripHome
-  Return to the dadbod-grip welcome screen from anywhere. Shows the keymap
-  reference, connection string examples, and navigation shortcuts. Also
-  reachable with Q from any grip buffer.
+  Return to the dadbod-grip welcome screen from anywhere. The DBG logo is
+  followed by actionable rows for the demo, connection picker, table picker,
+  and SQL pad. Tab / Shift-Tab or native j/k selects a row; Enter runs it.
+  Enter on other lines does nothing. Opening welcome does not connect or run
+  SQL. Q also returns here from the grid, query pad, or sidebar.
+
+  Welcome's current defaults remain q/Esc to close, gc/gC/C-g to connect,
+  gb or 1 for schema, go or 3 for tables, 2 for SQL, and ? for local help.
+  Existing 4-9 views and the ; Chonk Easter egg remain available. Only the
+  selected row changes Enter's previous connect-anywhere behavior.
+  Welcome and help show effective configured keys and omit disabled keys.
+  With a disabled action, type its global command: GripStart, GripConnect,
+  GripTables, or GripQuery. No alternate keymap preset is implemented.
 
 ==============================================================================
 6. KEYBINDINGS                                           *grip-keybindings*
