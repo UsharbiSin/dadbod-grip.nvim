@@ -71,6 +71,7 @@ local function _build_actions()
   local raw = {
 
     -- ── Navigation (all surfaces) ──────────────────────────────────────────
+    act("[nav]      Zoom pane / restore",     k("zoom"),             "Maximize the current split or restore its previous layout", { "all" }),
     act("[nav]      Switch connection",      k("connections"),      "Pick a database connection",                { "all" }),
     act("[nav]      ER diagram",             k("er_diagram"),       "Show entity-relationship diagram float",    { "all" }),
     act("[nav]      Table picker",           k("table_picker"),     "Pick a table to open in the grid",          { "all" }),

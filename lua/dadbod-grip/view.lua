@@ -2765,6 +2765,7 @@ function M.show_help(opts)
       "  (explain query plan: gQ)",
       "",
       "  Schema & Workflow",
+      string.format("  %-9s Zoom pane / restore layout", require("dadbod-grip.keymaps").get("zoom") or ":GripZoom"),
       "  go/gT/gt  Pick table (floating picker)",
       "  gb        Schema browser (toggle/focus)",
       "  gG        ER diagram: focus current table neighborhood",

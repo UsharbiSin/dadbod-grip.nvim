@@ -450,6 +450,10 @@ local function setup_keymaps(bufnr, url)
     require("dadbod-grip.schema").toggle(cur_url())
   end, { desc = "Grip: schema browser" })
 
+  kmap("zoom", "n", function()
+    require("dadbod-grip.zoom").toggle()
+  end, { desc = "Grip: zoom pane / restore layout" })
+
   -- er_diagram: ER diagram float
   kmap("er_diagram", "n", function()
     require("dadbod-grip.er_diagram").toggle(cur_url())

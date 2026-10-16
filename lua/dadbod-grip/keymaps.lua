@@ -53,6 +53,7 @@ add("ai", grid, normal, {
 
 add("navigation", all, normal, {
   { "schema_browser", "gb", "Opens, focuses, or closes the schema browser." },
+  { "zoom", "gz", "Zooms the current pane or restores its split layout." },
 })
 
 add("navigation", { "query_pad", "sidebar" }, normal, {

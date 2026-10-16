@@ -226,6 +226,7 @@ Action names (stable API) with their defaults:
   load_saved       = "gq"      load saved query
   welcome          = "Q"       welcome / home screen
   schema_browser   = "gb"      schema sidebar (open/focus/close)
+  zoom             = "gz"      zoom current pane / restore split sizes
 
   Shared: grid + sidebar ~
   query_pad        = "q"       open query pad
@@ -453,8 +454,33 @@ All commands are global and available after the plugin loads.
 
                                                               *:GripToggle*
 :GripToggle
-  Close all grip windows if any are open, or reopen the last workspace
-  (schema sidebar + query pad) if closed.
+  Delete visible Grip buffers across all tabs, or reconnect to the last
+  connection when no Grip windows are visible. Deleting buffers discards
+  unsaved query text and staged result state without a save prompt. This
+  command is not reversible workspace hiding. Use :GripZoom to make room
+  temporarily, or <Esc> inside the sidebar to close just its window.
+
+                                                                *:GripZoom*
+:GripZoom
+  Maximize the current split window, or restore the saved split sizes in
+  this tab. The default normal-mode key is gz in grids, the query pad, and
+  the schema sidebar. The command also works in ordinary file/help splits.
+  No windows are closed and no buffers are copied, replaced, or deleted.
+  Unsaved SQL, staged results, sidebar folds, and native window keys stay
+  available. Other panes remain at Neovim's minimum window size.
+
+  A second toggle restores the original sizes and fixed-size settings.
+  Navigation and edits made while zoomed are retained. After a terminal
+  resize or a split change, surviving panes are equalized around their saved
+  fixed-size settings. Added or rearranged windows stay in place; closed
+  windows are not rebuilt. Closing the zoomed pane also ends its zoom and
+  recovers usable sizes for the remaining panes. Floating panes are not maximized;
+  close their popup first, then zoom the underlying split.
+
+  Remap or disable only this shortcut with setup({ keymaps = { zoom = ... } }).
+  Native <C-w>h/j/k/l and <C-w>w still navigate windows. <C-w>= equalizes
+  sizes rather than restoring a saved layout. Avoid :only for temporary
+  zoom: closing a Grip grid wipes its result buffer and staged state.
 
                                                                 *:GripDrop*
 :GripDrop [table]
@@ -968,8 +994,9 @@ markers for primary keys and foreign keys.
 Open with `:GripQuery` or `q` from the grid or schema sidebar. Creates a
 persistent scratch SQL buffer with filetype=sql and built-in completion.
 
-Content protection: pressing `q` or `2` focuses the pad without replacing
-anything. Clicking a table in the sidebar or picker appends the new query
+Content protection: `q` or `2` from the grid/sidebar focuses the pad without
+replacing its SQL. Inside the pad, `q` goes to welcome and `2` opens query
+history. Clicking a table in the sidebar or picker appends the new query
 below existing SQL with a blank separator. The pad is only pre-filled when
 it is empty (or contains only the hint comment). Your work is never lost.
 
@@ -984,6 +1011,12 @@ columns from all attached databases appear with schema-qualified names
 Works with nvim-cmp, blink.cmp, or standalone via `<C-Space>`.
 
 Query pad keymaps:
+  q / Q           Go to welcome (q elsewhere opens/focuses this pad)
+  1               Open/focus sidebar (1 inside sidebar opens connections)
+  2               Query history (2 from grid/sidebar opens/focuses this pad)
+  3               Focus grid, or pick a table when none is open
+                  In a grid: return from a detail view to records, or pick
+                  a table when already viewing records.
   <C-CR>          Execute the SQL block under the cursor (normal/insert)
   <C-CR>          Execute visual selection into a grip grid (visual mode)
   <S-CR>      Execute and always open result in a new split (never reuses

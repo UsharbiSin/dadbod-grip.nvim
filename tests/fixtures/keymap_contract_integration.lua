@@ -23,6 +23,7 @@ keymaps.bind = function(surface, bufnr, action, mode, fn, opts)
 end
 
 local remaps = {
+  zoom = "<F27>",
   grid_col_left = ",",
   grid_col_right = ";",
   table_picker_go = "zp",

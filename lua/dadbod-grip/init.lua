@@ -2489,6 +2489,10 @@ function M.setup(opts)
     M.open_welcome()
   end, { desc = "Open dadbod-grip welcome screen" })
 
+  vim.api.nvim_create_user_command("GripZoom", function()
+    require("dadbod-grip.zoom").toggle()
+  end, { desc = "Zoom current pane or restore its split layout" })
+
   -- :GripToggle: close all grip windows if visible, reopen if hidden
   vim.api.nvim_create_user_command("GripToggle", function()
     -- Find all windows showing grip:// buffers
