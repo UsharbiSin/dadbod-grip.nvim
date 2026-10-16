@@ -75,11 +75,15 @@ return function(scenario)
       end
     end
   end
+  local function toggle()
+    if vim.fn.maparg("gz", "n", false, true).buffer == 1 then vim.cmd("normal gz")
+    else vim.cmd("GripZoom") end
+  end
   local function zoom(win)
     vim.api.nvim_set_current_win(win)
     local width, height = vim.api.nvim_win_get_width(win), vim.api.nvim_win_get_height(win)
     local layout = vim.fn.winlayout()
-    vim.cmd("GripZoom")
+    toggle()
     assert(vim.api.nvim_get_current_win() == win, "zoom changed the current window")
     assert(vim.deep_equal(layout, vim.fn.winlayout()), "zoom replaced or closed windows")
     assert(vim.api.nvim_win_get_width(win) * vim.api.nvim_win_get_height(win) > width * height,
@@ -89,12 +93,71 @@ return function(scenario)
     vim.api.nvim_set_current_win(win)
     local before = snapshot()
     zoom(win)
-    vim.cmd("GripZoom")
+    toggle()
     assert(vim.deep_equal(snapshot(), before), "restore changed sizes, options, buffers, or views")
     check_data()
   end
+  local facets = { stats = true, columns = true, fk = true, indexes = true, constraints = true }
+  local cellbuf
+  if facets[scenario] then
+    vim.api.nvim_set_current_win(wins.grid)
+    view.switch_view(gridbuf, scenario)
+    assert(session.current_view == scenario, "metadata view did not open")
+    wins[scenario] = wins.grid
+  elseif scenario == "cell-split" then
+    vim.api.nvim_set_current_win(wins.grid)
+    cellbuf = assert(require("dadbod-grip.cell_buffer").open(gridbuf), "cell split did not open")
+    vim.api.nvim_buf_set_lines(cellbuf, 0, -1, false, { "unsaved cell draft", "second draft line" })
+    wins[scenario] = vim.api.nvim_get_current_win()
+  elseif scenario == "profile" then
+    vim.api.nvim_set_current_win(wins.grid)
+    assert(require("dadbod-grip.profile").open("users", url), "profile did not open")
+    wins[scenario] = vim.api.nvim_get_current_win()
+  elseif scenario == "diff" then
+    vim.api.nvim_set_current_win(wins.grid)
+    require("dadbod-grip.diff").open("users", "users", url)
+    assert(vim.api.nvim_buf_get_name(0) == "grip://diff", "diff report did not open")
+    wins[scenario] = vim.api.nvim_get_current_win()
+  elseif scenario == "welcome" then
+    vim.api.nvim_set_current_win(wins.external)
+    grip.open_welcome()
+    wins.welcome = vim.api.nvim_get_current_win()
+    assert(vim.fn.maparg("gz", "n", false, true).buffer == 1, "welcome is missing its zoom shortcut")
+  end
   if wins[scenario] then
-    roundtrip(wins[scenario])
+    for _ = 1, 3 do roundtrip(wins[scenario]) end
+    zoom(wins[scenario])
+    vim.cmd("normal! j")
+    local navigated = vim.fn.winsaveview()
+    toggle()
+    assert(vim.deep_equal(vim.api.nvim_win_get_cursor(0), { navigated.lnum, navigated.col }),
+      "restore lost pane selection")
+    check_data()
+    if facets[scenario] then assert(session.current_view == scenario, "restore changed grid facet") end
+    if cellbuf then
+      assert(vim.bo[cellbuf].modified and vim.api.nvim_buf_get_lines(cellbuf, 0, 1, false)[1] == "unsaved cell draft",
+        "restore discarded the modified cell draft")
+    end
+  elseif scenario:sub(1, 6) == "float-" then
+    vim.api.nvim_set_current_win(wins.grid)
+    local before = snapshot()
+    if scenario == "float-er" then require("dadbod-grip.er_diagram").toggle(url)
+    elseif scenario == "float-cell" then require("dadbod-grip.editor").open("Synthetic cell", "unsaved draft", function() end)
+    elseif scenario == "float-json" then require("dadbod-grip.json_tree").open('{"synthetic":[1,2]}')
+    elseif scenario == "float-info" then vim.cmd("normal gs")
+    elseif scenario == "float-picker" then require("dadbod-grip.grip_picker").open({ title = "Synthetic", items = { "one", "two" }, on_select = function() end })
+    elseif scenario == "float-explain" then vim.cmd("GripExplain SELECT * FROM users") end
+    vim.cmd("stopinsert")
+    local popup = vim.api.nvim_get_current_win()
+    local config = vim.api.nvim_win_get_config(popup)
+    assert(config.relative ~= "", "expected actual floating panel: " .. scenario)
+    assert(vim.fn.maparg("gz", "n", false, true).buffer ~= 1, "unexpected floating zoom shortcut")
+    vim.cmd("GripZoom")
+    assert(vim.api.nvim_get_current_win() == popup and vim.deep_equal(config, vim.api.nvim_win_get_config(popup)),
+      "floating zoom refusal changed the popup")
+    assert(vim.deep_equal(before, snapshot()), "floating zoom refusal changed split panes")
+    vim.api.nvim_win_close(popup, true)
+    check_data()
   elseif scenario == "repeat" then
     for _ = 1, 10 do roundtrip(wins.query) end
   elseif scenario == "edit" then
@@ -174,16 +237,19 @@ return function(scenario)
     check_data()
   elseif scenario == "help-split" then
     vim.cmd("help windows")
-    roundtrip(vim.api.nvim_get_current_win())
+    for _ = 1, 3 do roundtrip(vim.api.nvim_get_current_win()) end
   elseif scenario == "help" then
+    vim.api.nvim_set_current_win(wins.query)
+    local before = snapshot()
     zoom(wins.query)
     view.show_help()
     local help = vim.api.nvim_get_current_win()
     assert(vim.api.nvim_win_get_config(help).relative ~= "", "expected actual floating help")
-    vim.api.nvim_win_close(help, true)
-    vim.api.nvim_set_current_win(wins.query)
     vim.cmd("GripZoom")
+    assert(vim.api.nvim_get_current_win() == help and vim.deep_equal(before, snapshot()),
+      "restoring from floating help changed focus or failed to restore underlying splits")
     check_data()
+    vim.api.nvim_win_close(help, true)
     view.show_help()
     help = vim.api.nvim_get_current_win()
     local layout = vim.fn.winlayout()
@@ -215,6 +281,19 @@ return function(scenario)
     assert(vim.deep_equal(before, snapshot()), "single-window zoom changed state")
   else
     error("unknown zoom scenario: " .. scenario)
+  end
+  local original_sizes = {}
+  for _, item in ipairs(snapshot()) do original_sizes[item.win] = item end
+  _G.grip_zoom_main_check = function()
+    for _, item in ipairs(snapshot()) do
+      local original = original_sizes[item.win] or {}
+      assert((item.width > 1 or original.width == 1) and (item.height > 1 or original.height == 1),
+        "zoom newly minimized a surviving pane")
+    end
+    if cellbuf then
+      assert(vim.bo[cellbuf].modified and vim.api.nvim_buf_get_lines(cellbuf, 0, 1, false)[1] == "unsaved cell draft")
+    end
+    return check_data()
   end
   return true
 end

@@ -58,7 +58,7 @@ grip.setup(opts)
 local url = "sqlite:tests/seed_sqlite.db"
 assert(connections.switch(url, "seed", "sqlite"))
 assert(vim.wait(5000, function()
-  return schema.is_open() and query_pad.get_pad_bufnr()
+  return schema.is_open() and query_pad.get_pad_bufnr() and vim.fn.bufnr("grip://welcome") ~= -1
 end, 10), "workspace did not open")
 
 grip.open("users", url)
@@ -69,6 +69,7 @@ local buffers = {
   grid = vim.fn.bufnr("grip://users"),
   query_pad = query_pad.get_pad_bufnr(),
   sidebar = vim.fn.bufnr("grip://schema"),
+  welcome = vim.fn.bufnr("grip://welcome"),
 }
 
 local function normalize(key)
@@ -123,6 +124,8 @@ end
 assert_surface("grid", buffers.grid, { "n", "x" })
 assert_surface("query_pad", buffers.query_pad, { "n", "i", "x" })
 assert_surface("sidebar", buffers.sidebar, { "n" })
+
+assert_surface("welcome", buffers.welcome, { "n" })
 
 local function callback_for(bufnr, mode, key)
   local lhs = normalize(key)

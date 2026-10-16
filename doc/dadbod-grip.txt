@@ -463,8 +463,9 @@ All commands are global and available after the plugin loads.
                                                                 *:GripZoom*
 :GripZoom
   Maximize the current split window, or restore the saved split sizes in
-  this tab. The default normal-mode key is gz in grids, the query pad, and
-  the schema sidebar. The command also works in ordinary file/help splits.
+  this tab. The default normal-mode key is gz in grids, the query pad, the
+  schema sidebar, and welcome. The command also works in ordinary file/help
+  splits and the full cell-value split; those use :GripZoom without a gz map.
   No windows are closed and no buffers are copied, replaced, or deleted.
   Unsaved SQL, staged results, sidebar folds, and native window keys stay
   available. Other panes remain at Neovim's minimum window size.

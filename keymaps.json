@@ -110,7 +110,7 @@
       "default": "gz",
       "description": "Zooms the current pane or restores its split layout.",
       "category": "navigation",
-      "surfaces": ["grid", "query_pad", "sidebar"],
+      "surfaces": ["grid", "query_pad", "sidebar", "welcome"],
       "modes": ["n"]
     },
     {
