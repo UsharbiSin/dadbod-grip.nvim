@@ -1181,10 +1181,19 @@ If a literal password contains `${WORD}`, write `$${WORD}`: a doubled dollar
 produces the literal text and resolves nothing. The escape is only special
 immediately before `{NAME}`, so `pa$$word` is left alone.
 
-The .env file is parsed for `KEY=value` and `export KEY=value` lines; one
-pair of surrounding quotes is stripped; whole-line `#` comments and blank
-lines are ignored. A `#` inside a value is part of the value, not the start
-of a comment -- a password may legitimately contain one.
+The .env file supports `KEY=value` and `export KEY=value` lines. Whitespace
+outside values and one surrounding quote pair are stripped. Whole-line `#`
+comments and blank lines are ignored. An inline comment starts with whitespace
+followed by `#` outside the quotes, so `KEY="value" # comment` and
+`KEY=value # comment` both produce `value`. A quoted hash or an unspaced hash
+stays literal: `KEY="value # suffix"` and `KEY=value#suffix` retain their hashes.
+
+Values remain literal: backslash escapes and nested ${VAR} text are not decoded
+or expanded, and multiline values and shell expressions are not supported.
+Backslashes only help identify escaped quotes when finding the closing quote.
+An unmatched quote or extra noncomment text after a closing quote is preserved
+verbatim rather than silently truncating a credential. Inline comments require
+separating whitespace, including after a closing quote.
 
 It is read at connect time and memoized on the file's mtime, so a
 rotated password is picked up on the next query. A git-crypt-locked file is

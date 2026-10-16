@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.0] - 2026-10-16
+
+### Fixed
+
+- Connection variables read from `.env` files now support whitespace-separated
+  inline comments after quoted or unquoted values. Quoted hashes and unspaced
+  hashes stay literal, and malformed quoted tails are preserved rather than
+  silently truncated. File values still take precedence over process variables.
+
 ### Added
 
 - `:GripZoom` and the configurable `gz` shortcut maximize the current split
@@ -695,7 +704,8 @@ older tags are left in place so anyone pinned to them keeps working.
 - **joryeugene** — SQL Server adapter, PostgreSQL routines in the schema sidebar, focused ER diagram
   ([PR #17](https://github.com/joryeugene/dadbod-grip.nvim/pull/17)).
 
-[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.12.0...HEAD
+[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...HEAD
+[3.13.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.12.0
 [3.11.1]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.11.1
 [3.11.0]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.11.0
