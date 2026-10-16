@@ -2690,7 +2690,7 @@ function M.show_help(opts)
   max_w = math.max(max_w + 2, 46)
   local popup_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(popup_buf, 0, -1, false, help)
-  -- Full help highlights: logo, section headers, keymap keys, separators, RO box, portal
+  -- Help highlights: logo, section headers, keymap keys, and separators.
   local ns_h = vim.api.nvim_create_namespace("grip_help_hl")
   local function hadd(ln, group, s, e)
     -- Missing or negative end column means "to the end of the line": add_highlight
@@ -2699,13 +2699,10 @@ function M.show_help(opts)
     if e and e >= 0 then ext.end_col = e else ext.end_row, ext.end_col = ln + 1, 0 end
     vim.api.nvim_buf_set_extmark(popup_buf, ns_h, ln, s or 0, ext)
   end
-  local in_ro_box = false
   for i, line in ipairs(help) do
     local ln = i - 1
     if    line:match("^    %a") then                                           hadd(ln, "Special")
     elseif line:find("╔═╦") or line:find("║d║") or line:find("╚═╩") then     hadd(ln, "Special")
-    elseif line:find("┌─") then    in_ro_box = true;  hadd(ln, "DiagnosticWarn")
-    elseif in_ro_box then          hadd(ln, "DiagnosticWarn"); if line:find("└──") then in_ro_box = false end
     elseif line:match("^%s+[─═]") then hadd(ln, "Comment")
     elseif line:find("\xe2\x86\xb3") then hadd(ln, "Comment")   -- ↳ continuation
     elseif line:find("Colors:")    then hadd(ln, "Comment")

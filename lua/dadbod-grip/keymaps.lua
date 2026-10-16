@@ -384,6 +384,17 @@ function M.help_lines(surface, width)
   end
   vim.list_extend(lines, { "  :help dadbod-grip  Full manual and commands",
     "  :GripZoom          Zoom a normal help/report split",
+    "", "  About dadbod-grip", "",
+    "    ╭────────────────╮",
+    "    │  ◉       ─     │",
+    "    │   · ╰──╯ ·     │",
+    "    ╰───────┬────────╯",
+    "    ┌───────┴────────┐",
+    "  ╭─┤ id │ hello     ├─╮",
+    "  ╰─┼────┼───────────┼─╯",
+    "    │  1 │ chonk     │",
+    "    └────┴───────────┘",
+    "", "  Chonk holds the center", "",
     "  q / Esc            Close this help", "" })
   return lines
 end

@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window and the shared workspace, using effective configured key hints.
 - Existing welcome shortcuts are now cataloged and support remap/disable
   settings. Their default keys and the hidden Chonk cameo are preserved.
+- Chonk's Table Hug drawing appears in the About section at the end
+  of in-app help, with "Chonk holds the center" beneath it.
 
 ### Changed
 
@@ -21,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It does not run the query automatically.
 - In-app help uses the current pane's action catalog, effective keys, and
   contextual number-key behavior. Query-pad help describes its own actions.
+- The welcome diagram labels its effective schema, SQL, and table keys, with
+  run and zoom/restore hints nearby. Other panes retain their contextual keys.
 
 ## [3.13.0] - 2026-10-16
 

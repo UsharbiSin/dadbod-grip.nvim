@@ -15,14 +15,16 @@ function M.render(buf)
   marks[#marks + 1] = { #lines - 1, "Title", brand:find("dadbod-grip", 1, true) - 1, #brand }
   add("  ╚═╩═╩═╝", "Special")
   local activate = km.get("welcome_activate")
-  local move = km.get("welcome_next")
+  local move, previous = km.get("welcome_next"), km.get("welcome_prev")
   local controls = activate and activate .. " choose" or "Type a command"
-  if move then controls = controls .. " | " .. move .. "/" .. key("welcome_prev", "k") .. " move" end
+  if move and previous then controls = controls .. " | " .. move .. "/" .. previous .. " move"
+  elseif move then controls = controls .. " | " .. move .. " next"
+  elseif previous then controls = controls .. " | " .. previous .. " previous" end
   add("  START  " .. controls, "Title")
   for _, action in ipairs({
     { "demo", "Open demo", ":GripStart" },
     { "connect", "Connect a database", ":GripConnect" },
-    { "tables", "Browse tables", key("table_picker_go", ":GripTables") },
+    { "tables", "Browse tables", km.get("tab_3") or key("table_picker_go", ":GripTables") },
     { "query", "Open SQL pad", key("tab_2", ":GripQuery") },
   }) do
     local prefix = string.format("  %-21s ", action[2])
@@ -31,21 +33,32 @@ function M.render(buf)
   end
   -- Stable row identities keep selections intact when this buffer is shared by
   -- differently sized windows or tabs. The workspace also fits a short split.
-  for i, line in ipairs({
-    "  +--------+-----------------------+",
-    "  | Schema | SQL pad               |",
-    "  |        +-----------------------+",
-    "  |        | Table / results       |",
-    "  +--------+-----------------------+",
+  local function label(binding, name) return binding and (binding .. " " .. name) or name end
+  local schema = label(km.get("tab_1") or km.get("schema_browser"), "Schema")
+  local query = label(km.get("tab_2"), "SQL")
+  local results = label(km.get("tab_3") or km.get("table_picker_go"), "Table/results")
+  local left = math.max(10, vim.fn.strdisplaywidth(schema))
+  local right = math.max(vim.fn.strdisplaywidth(query), vim.fn.strdisplaywidth(results))
+  local function cell(text, width) return text .. string.rep(" ", width - vim.fn.strdisplaywidth(text)) end
+  local border = "  +" .. string.rep("-", left) .. "+" .. string.rep("-", right) .. "+"
+  local hints = {
+    km.get("qpad_execute") and ("SQL: " .. km.get("qpad_execute") .. " run") or "",
+    km.get("zoom") and (km.get("zoom") .. " Zoom/restore") or "",
+    km.get("help") and (km.get("help") .. " Help") or "",
+    km.get("welcome_close") and (km.get("welcome_close") .. " Close") or "",
+    "Welcome keys",
+  }
+  for i, line in ipairs({ border,
+    "  |" .. cell(schema, left) .. "|" .. cell(query, right) .. "|",
+    "  |" .. string.rep(" ", left) .. "+" .. string.rep("-", right) .. "+",
+    "  |" .. string.rep(" ", left) .. "|" .. cell(results, right) .. "|", border,
   }) do
-    local hint = ({ { "help", "Help" }, { "schema_browser", "Schema" },
-      { "zoom", "Zoom" }, { "welcome_close", "Close" } })[i]
-    if hint and km.get(hint[1]) then line = line .. "  " .. km.get(hint[1]) .. " " .. hint[2] end
+    if hints[i] ~= "" then line = line .. "  " .. hints[i] end
     add(line, "Comment")
   end
   if km.get("qpad_execute") then
-    add("  Demo: rolls -> " .. key("tab_2", ":GripQuery") .. " SQL -> "
-      .. km.get("qpad_execute") .. " run", "Comment")
+    add(km.get("help") and ("  Other panes: " .. km.get("help") .. " shows their local keys.")
+      or "  Full manual: :help dadbod-grip", "Comment")
   else
     add("  Demo: :Grip SELECT sku FROM rolls LIMIT 20", "Comment")
   end

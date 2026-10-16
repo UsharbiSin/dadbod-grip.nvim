@@ -75,7 +75,9 @@ Open the disposable demo:
 The demo recreates its database from the bundled seed each time, so edits cannot damage your own data.
 It opens the schema sidebar and walkthrough with the cursor inside the first SQL block. Press `<C-CR>` to run that block; opening the demo does not run it automatically. To browse a table first, press `gb`, select `rolls`, press Enter, and then press `2` to return to SQL.
 
-Run `:Grip` or `:GripHome` for the welcome screen. The existing DBG logo sits above four action rows: open the demo, connect a database, browse tables, and open SQL. Use Tab/Shift-Tab or native `j`/`k` to select a row, then press Enter. The welcome adapts to a shared workspace, and its hints reflect configured keys. These are the default bindings; no alternate preset is enabled.
+Run `:Grip` or `:GripHome` for the welcome screen. The DBG logo sits above four action rows: open the demo, connect a database, browse tables, and open SQL. Use Tab/Shift-Tab or native `j`/`k` to select a row, then press Enter. The diagram follows configured keys; with defaults, `1` opens schema, `2` opens SQL, and `3` opens the table picker.
+
+Other panes have contextual actions: `2` in SQL opens history, and `1` in schema opens connections. Press `?` for that pane's effective keys; the help ends with Chonk's About section. Default bindings remain unchanged.
 
 ### Connect to a database
 

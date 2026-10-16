@@ -6,12 +6,19 @@ return function(scenario)
   vim.g.db = nil
   vim.env.DATABASE_URL = nil
   local opts = { discovery = false, ai = false, completion = false }
-  if scenario == "remap" or scenario == "help-remap" or scenario == "pad-hints-remap" then
+  if scenario == "remap" or scenario == "help-remap" or scenario == "pad-hints-remap"
+      or scenario == "diagram-remap" or scenario == "compact-all-remap" then
     opts.keymaps = { welcome_activate = "<F4>", welcome_next = "<F5>",
-      welcome_prev = "<F6>", tab_2 = "<F7>", zoom = "<F8>", qpad_execute = "<F9>" }
-  elseif scenario == "disabled" or scenario == "help-disabled" or scenario == "pad-hints-disabled" then
+      welcome_prev = "<F6>", tab_1 = "<F10>", tab_2 = "<F7>", tab_3 = "<F11>", zoom = "<F8>", qpad_execute = "<F9>" }
+  elseif scenario == "disabled" or scenario == "help-disabled" or scenario == "pad-hints-disabled"
+      or scenario == "diagram-disabled" then
     opts.keymaps = { welcome_activate = false, welcome_next = false,
-      welcome_prev = false, zoom = false, tab_2 = false, qpad_execute = false }
+      welcome_prev = false, zoom = false, tab_1 = false, schema_browser = false,
+      tab_2 = false, tab_3 = false, table_picker_go = false, qpad_execute = false }
+  elseif scenario == "compact-schema-remap" then opts.keymaps = { tab_1 = "<F10>" }
+  elseif scenario == "compact-help-disabled" then opts.keymaps = { help = false }
+  elseif scenario == "next-only" then opts.keymaps = { welcome_prev = false }
+  elseif scenario == "prev-only" then opts.keymaps = { welcome_next = false }
   end
   grip.setup(opts)
   vim.o.scrolloff = 5
@@ -46,7 +53,45 @@ return function(scenario)
   local welcome = vim.api.nvim_get_current_buf()
   local all = check_welcome()
   assert(vim.api.nvim_get_current_line():find("Open demo", 1, true), "initial Enter does not select demo")
-  if scenario == "split" then
+  if scenario:match("^compact%-") then
+    if scenario == "compact-help-disabled" then
+      assert(all:find("Full manual: :help dadbod-grip", 1, true), "disabled help lacks truthful manual fallback")
+      assert(not all:find("shows their local keys", 1, true), "static manual advertised as configured local help")
+      assert(vim.fn.maparg("?", "n") == "", "disabled help still mapped")
+    else
+      assert(all:find("<F10> Schema", 1, true), "compact diagram lost remapped schema key")
+      assert(all:find("Zoom/restore", 1, true), "compact diagram lost restore hint")
+      press(scenario == "compact-all-remap" and "<F5>" or "<Tab>")
+      assert(vim.api.nvim_get_current_line():find("Connect a database", 1, true),
+        "compact diagram changed action row identity")
+    end
+    return true
+  elseif scenario == "next-only" or scenario == "prev-only" then
+    local hint = scenario == "next-only" and "<Tab> next" or "<S-Tab> previous"
+    local disabled = scenario == "next-only" and "<S-Tab>" or "<Tab>"
+    assert(all:find(hint, 1, true), "single active action control is not explained")
+    assert(not all:find(disabled, 1, true) and vim.fn.maparg(disabled, "n") == "", "disabled action control advertised")
+    press(scenario == "next-only" and "<Tab>" or "<S-Tab>")
+    assert(vim.api.nvim_get_current_line():find(scenario == "next-only" and "Connect a database" or "Open SQL pad", 1, true))
+    return true
+  elseif scenario == "diagram" or scenario == "diagram-remap" then
+    local labels = scenario == "diagram" and { "1 Schema", "2 SQL", "3 Table/results" }
+      or { "<F10> Schema", "<F7> SQL", "<F11> Table/results" }
+    for _, label in ipairs(labels) do assert(all:find(label, 1, true), "diagram key missing: " .. label) end
+    for _, key in ipairs(scenario == "diagram" and { "1", "2", "3" } or { "<F10>", "<F7>", "<F11>" }) do
+      assert(vim.fn.maparg(key, "n", false, true).buffer == 1, "diagram key is not active here: " .. key)
+    end
+    assert(all:find("Welcome keys", 1, true), "diagram presents digits as universal mappings")
+    assert(all:find("Zoom/restore", 1, true), "daily restore action absent")
+    return true
+  elseif scenario == "diagram-disabled" then
+    assert(all:find("Table/results", 1, true), "workspace diagram lost")
+    for _, label in ipairs({ "1 Schema", "2 SQL", "3 Table/results" }) do
+      assert(not all:find(label, 1, true), "disabled diagram key advertised: " .. label)
+    end
+    for _, key in ipairs({ "1", "2", "3" }) do assert(vim.fn.maparg(key, "n") == "") end
+    return true
+  elseif scenario == "split" then
     vim.cmd("split")
     vim.cmd("redraw")
     vim.wait(40)
@@ -121,6 +166,19 @@ return function(scenario)
     elseif scenario == "help-disabled" then
       assert(not help:find("<C-CR>", 1, true), "SQL help advertises disabled run key")
     end
+    if scenario == "help-about" then
+      press("G")
+      assert(help:find("About dadbod-grip", 1, true), "About section absent")
+      assert(help:find("╭─┤ id │ hello", 1, true), "selected Table Hug absent")
+      local top = vim.fn.line("w0")
+      local visible = table.concat(vim.api.nvim_buf_get_lines(0, top - 1, top - 1 + vim.api.nvim_win_get_height(0), false), "\n")
+      assert(visible:find("Chonk holds the center", 1, true), "About character/phrase need hidden scrolling")
+      assert(not next(view._sessions), "About executed SQL")
+      local ns = vim.api.nvim_create_namespace("grip_help_hl")
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(0, ns, 0, -1, { details = true })) do
+        assert(mark[4].hl_group ~= "DiagnosticWarn", "About drawing is incorrectly shown as a warning")
+      end
+    end
     local width = vim.api.nvim_win_get_width(0)
     for _, line in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
       assert(vim.fn.strdisplaywidth(line) <= width, "help line clipped: " .. line)
@@ -149,7 +207,9 @@ return function(scenario)
   assert(not next(view._sessions), "opening demo executed a query automatically")
 
   -- A real table first, then its auto-synced SQL, just like the native journey.
-  vim.api.nvim_set_current_win(schema.get_winid())
+  grip.open_welcome()
+  press("1")
+  assert(vim.api.nvim_get_current_win() == schema.get_winid(), "welcome1 did not focus schema")
   local state = schema.get_state(vim.g.db)
   for i, node in ipairs(state.nodes) do
     if node.kind == "table" and node.name == "rolls" then vim.api.nvim_win_set_cursor(0, { i + 2, 0 }); break end
@@ -165,6 +225,11 @@ return function(scenario)
   press("2")
   assert(vim.api.nvim_get_current_buf() == qpad.get_pad_bufnr())
   assert(vim.api.nvim_get_current_line() == 'SELECT * FROM "rolls"', "table's ready SQL was not selected")
+  local grid = vim.fn.bufnr("grip://rolls")
+  press("3")
+  assert(vim.api.nvim_get_current_buf() == grid, "SQL-pad3 did not return to the table")
+  press("2")
+  assert(vim.api.nvim_get_current_buf() == qpad.get_pad_bufnr(), "grid2 did not return to SQL")
   press("<C-CR>")
   assert(vim.wait(5000, function()
     for _, session in pairs(view._sessions) do

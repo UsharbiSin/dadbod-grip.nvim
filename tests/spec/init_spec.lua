@@ -762,7 +762,7 @@ end)
 test("open_welcome: action commands and keys have their own highlight ranges", function()
   local buf, marks = open_welcome_and_wait()
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  for _, token in ipairs({ ":GripStart", ":GripConnect", "go", "2" }) do
+  for _, token in ipairs({ ":GripStart", ":GripConnect", "3", "2" }) do
     local found = false
     for _, mark in ipairs(marks) do
       local det = mark[4]

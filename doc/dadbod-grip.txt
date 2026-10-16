@@ -598,11 +598,15 @@ All commands are global and available after the plugin loads.
 
   Welcome's current defaults remain q/Esc to close, gc/gC/C-g to connect,
   gb or 1 for schema, go or 3 for tables, 2 for SQL, and ? for local help.
+  The workspace diagram labels these welcome keys. In the SQL pad, 2 opens
+  history; in schema, 1 opens connections. ? shows that pane's actual actions.
   Existing 4-9 views and the ; Chonk Easter egg remain available. Only the
   selected row changes Enter's previous connect-anywhere behavior.
   Welcome and help show effective configured keys and omit disabled keys.
   With a disabled action, type its global command: GripStart, GripConnect,
   GripTables, or GripQuery. No alternate keymap preset is implemented.
+  In-app help ends with an About section featuring Chonk's Table Hug drawing.
+  Press G in help to see it, then q or Escape to return to the same pane.
 
 ==============================================================================
 6. KEYBINDINGS                                           *grip-keybindings*
