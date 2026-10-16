@@ -736,7 +736,8 @@ local WELCOME_GROUPS = {
   Comment = function(text, line) return text == line end,
   Special = function(text, line) return text == line end,
   Title = function(text, line)
-    return text:match("^dadbod%-grip") or (text == line and text:match("^  [A-Z][A-Z ]+"))
+    return text:match("^dadbod%-grip")
+      or (text == line and (text:match("^  [A-Z][A-Z ]+") or text == "  Welcome keys"))
   end,
   Statement = function(text) return text:match("^:Grip%S*$") end,
   Identifier = function(text) return text:match("^%S+$") end,

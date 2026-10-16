@@ -45,6 +45,10 @@ return function(scenario)
     for _, line in ipairs(vim.api.nvim_buf_get_lines(0, 0, -1, false)) do
       assert(vim.fn.strdisplaywidth(line) <= vim.api.nvim_win_get_width(0), "welcome overflow: " .. line)
     end
+    local heading = assert(all:find("  Welcome keys\n", 1, true), "welcome key scope is not a standalone heading")
+    local diagram = assert(all:find("  +", 1, true), "welcome diagram absent")
+    assert(heading < diagram, "welcome key heading is orphaned below its shortcuts")
+    assert(not all:find("Welcome keys", heading + 14, true), "duplicate trailing welcome key label")
     assert(vim.api.nvim_buf_line_count(0) <= vim.api.nvim_win_get_height(0), "welcome actions need scrolling")
     return all
   end

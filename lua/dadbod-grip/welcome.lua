@@ -41,12 +41,13 @@ function M.render(buf)
   local right = math.max(vim.fn.strdisplaywidth(query), vim.fn.strdisplaywidth(results))
   local function cell(text, width) return text .. string.rep(" ", width - vim.fn.strdisplaywidth(text)) end
   local border = "  +" .. string.rep("-", left) .. "+" .. string.rep("-", right) .. "+"
+  add("  Welcome keys", "Title")
   local hints = {
     km.get("qpad_execute") and ("SQL: " .. km.get("qpad_execute") .. " run") or "",
     km.get("zoom") and (km.get("zoom") .. " Zoom/restore") or "",
     km.get("help") and (km.get("help") .. " Help") or "",
     km.get("welcome_close") and (km.get("welcome_close") .. " Close") or "",
-    "Welcome keys",
+    "",
   }
   for i, line in ipairs({ border,
     "  |" .. cell(schema, left) .. "|" .. cell(query, right) .. "|",
