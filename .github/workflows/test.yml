@@ -74,6 +74,35 @@ jobs:
           GRIP_REQUIRE_DUCKDB: "1"
         run: just test
 
+  visual:
+    name: visual (${{ matrix.neovim }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim: [v0.10.0, stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+      - uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+      - name: Install attached UI test tools
+        run: sudo apt-get update && sudo apt-get install -y sqlite3 tmux
+      - name: Run documented visual and staged import gate
+        env:
+          XDG_CONFIG_HOME: ${{ runner.temp }}/grip-visual/config
+          XDG_DATA_HOME: ${{ runner.temp }}/grip-visual/data
+          XDG_STATE_HOME: ${{ runner.temp }}/grip-visual/state
+          XDG_CACHE_HOME: ${{ runner.temp }}/grip-visual/cache
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/grip-visual/runtime
+        run: |
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" \
+            "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
+          just e2e-visual
+
   live:
     name: live (${{ matrix.database }})
     runs-on: ubuntu-latest
