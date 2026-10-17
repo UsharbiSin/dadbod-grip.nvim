@@ -149,6 +149,10 @@ end)
 
 test('actual interrupted wait preserves prior result time', function()
   local buf, session = public_grid()
+  -- Initial column metadata is scheduled after open. Let its real adapter wait
+  -- finish before injecting Ctrl-C, so it cannot consume the target interrupt.
+  assert(vim.wait(1000, function() return session._column_info ~= nil end, 5),
+    'initial column metadata did not finish')
   local previous = text(buf)
   local query, notify = db.query, vim.notify
   local interrupted
