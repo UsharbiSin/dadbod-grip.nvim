@@ -18,7 +18,8 @@ trap 'exit 143' TERM
 tmux wait-for "$channel" &
 waiter=$!
 acknowledged=false
-while :; do
+acknowledge_prompt() {
+  local pane last_line
   pane="$(tmux capture-pane -p -t "$session")"
   # Old text in a SQL pad or elsewhere in the pane is not a current prompt.
   last_line="$(printf '%s\n' "$pane" | awk 'NF { line=$0 } END { sub(/[[:space:]]+$/, "", line); print line }')"
@@ -30,6 +31,9 @@ while :; do
   else
     acknowledged=false
   fi
+}
+while :; do
+  acknowledge_prompt
   # Inspect the current pane even if the signal arrived first: an already
   # visible prompt still needs acknowledgement before the next driver action.
   if ! kill -0 "$waiter" 2>/dev/null; then break; fi
@@ -37,4 +41,8 @@ while :; do
 done
 if wait "$waiter"; then status=0; else status=$?; fi
 waiter=""
+# The last capture may predate a prompt/stage that arrived while tmux was
+# returning its snapshot. Inspect again after the waiter conclusively exits,
+# preserving acknowledgement state so a lingering prompt gets no second Enter.
+acknowledge_prompt
 exit "$status"
