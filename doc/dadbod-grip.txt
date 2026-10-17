@@ -1588,6 +1588,8 @@ grip.setup({opts})
     limit         (number)  Default row limit. Default: 100
     max_col_width (number)  Max display width per column. Default: 40
     timeout       (number)  Query timeout in ms. Default: 10000
+    engine_timing (boolean) Collect DuckDB profiler latency. Default: false
+                            See |grip-engine-timing|
     sticky_header (boolean) Column names in the winbar. Default: true
                             See |grip-sticky-header|
     open_sidebar  (boolean) Open schema sidebar on connect. Default: true

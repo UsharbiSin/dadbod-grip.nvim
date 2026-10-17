@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-10-17
+
 ### Added
 
 - Opt-in `engine_timing = true` collects DuckDB profiler latency during the
@@ -25,7 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. Staged apply history now records its client write duration.
   Completion preserves navigation and edits made while waiting. Interrupted
   or timed-out client waits report an unknown database outcome before retry.
-
 - Independent `show_running_time` and `show_result_time` options (both true by
   default) hide the loading counter or retained result durations. Loading
   animation, completed action status, and history measurement remain available.
@@ -776,7 +777,8 @@ older tags are left in place so anyone pinned to them keeps working.
 - **joryeugene** — SQL Server adapter, PostgreSQL routines in the schema sidebar, focused ER diagram
   ([PR #17](https://github.com/joryeugene/dadbod-grip.nvim/pull/17)).
 
-[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.15.0...HEAD
+[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.16.0...HEAD
+[3.16.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.15.0...v3.16.0
 [3.15.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.14.0...v3.15.0
 [3.14.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...v3.14.0
 [3.13.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.12.0...v3.13.0
