@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in Zen display with `show_hints = false` and the session-wide `:GripZen`
+  toggle. Automatic grid, SQL pad, sidebar, and welcome shortcuts can be hidden
+  independently of timing and pane layout. Essential result status and explicit
+  help remain available; new SQL pads display help outside the SQL text.
 - Mutation previews and confirmed writes show the loading clock, including
   staged/import apply, local file write-back, transaction undo, and DDL.
   Successful write/reload results retain a distinct `Write: ... client` time

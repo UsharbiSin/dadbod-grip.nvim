@@ -128,6 +128,7 @@ Override if needed: >lua
     open_sidebar     = true,
     show_running_time = true,
     show_result_time  = true,
+    show_hints        = true,
   })
 <
 When `completion` is false, grip's built-in TextChangedI popup is disabled.
@@ -193,6 +194,17 @@ the sticky header, or whether the sidebar opens.
 
 Set `open_sidebar = false` to connect directly into the main workspace. The
 sidebar remains available through :GripSchema, `gb`, or `1`.
+
+Set `show_hints = false` for Zen display: hide automatic shortcut/decorative
+help in the grid, SQL pad, sidebar, and welcome screen. Essential result status,
+column labels, data/NULLs, staged colors/counts, read-only and hidden-column
+markers, filters, pagination/totals, loading, and errors remain available.
+Narrow grids may use extra status rows so fields remain readable. Explicit `?`
+help (or its configured binding) still works. New SQL-pad help uses decorations;
+changing modes never rewrites existing SQL or comments. `:GripZen` toggles this
+setting for the current session without changing either timing option, keymaps,
+pane geometry, or zoom. No default key is added. A cursor on a removed help row
+may naturally clamp to the last remaining line.
 
                                                              *grip-picker*
 When `picker` is set to "telescope" or "snacks", simple pickers (table picker,
@@ -531,6 +543,7 @@ All commands are global and available after the plugin loads.
   this tab. The default normal-mode key is gz in grids, the query pad, the
   schema sidebar, and welcome. The command also works in ordinary file/help
   splits and the full cell-value split; those use :GripZoom without a gz map.
+
   No windows are closed and no buffers are copied, replaced, or deleted.
   Unsaved SQL, staged results, sidebar folds, and native window keys stay
   available. Other panes remain at Neovim's minimum window size.
@@ -551,6 +564,12 @@ All commands are global and available after the plugin loads.
   Native <C-w>h/j/k/l and <C-w>w still navigate windows. <C-w>= equalizes
   sizes rather than restoring a saved layout. Avoid :only for temporary
   zoom: closing a Grip grid wipes its result buffer and staged state.
+
+                                                                 *:GripZen*
+:GripZen
+  Toggle automatic shortcut hints for this session. Equivalent to switching
+  `show_hints` between true (normal) and false (Zen); timing and layout remain
+  independent. Existing grids, SQL pad, sidebar, and welcome screens update.
 
                                                                 *:GripDrop*
 :GripDrop [table]
@@ -1524,6 +1543,7 @@ grip.setup({opts})
     open_sidebar  (boolean) Open schema sidebar on connect. Default: true
     show_running_time (boolean) Elapsed number in the loading float. Default: true
     show_result_time  (boolean) Retained query/action durations. Default: true
+    show_hints        (boolean) Automatic shortcut help. Default: true
                                 See |grip-query-timer|
 
                                                            *grip.open()*

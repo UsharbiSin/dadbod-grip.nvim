@@ -47,15 +47,71 @@ function M.query_time(ms, width)
   return ui.truncate_display(" " .. duration, width)
 end
 
+-- Essential status never omits a field; narrow windows use additional rows.
+function M.status(items, width)
+  if width < 1 then return {} end
+  local rows, used = {{}}, 0
+  local function append(text, hl)
+    rows[#rows][#rows[#rows] + 1] = {text, hl}
+    used = used + vim.fn.strdisplaywidth(text)
+  end
+  for _, item in ipairs(items) do
+    local text, hl = item[1], item[2] or 'Normal'
+    local size = vim.fn.strdisplaywidth(text)
+    if used > 0 and used + 3 + size > width then rows[#rows + 1], used = {}, 0 end
+    if used > 0 then append(' | ', 'GripReadonly') end
+    for i = 0, vim.fn.strchars(text) - 1 do
+      local char = vim.fn.strcharpart(text, i, 1)
+      local cells = vim.fn.strdisplaywidth(char)
+      if used + cells > width then rows[#rows + 1], used = {}, 0 end
+      append(char, hl)
+    end
+  end
+  return rows
+end
+
+function M.status_width(buf)
+  local width = vim.o.columns
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    local info = vim.fn.getwininfo(win)[1]
+    if info then width = math.min(width, info.width - info.textoff) end
+  end
+  return math.max(1, width)
+end
+
 function M.attach(sessions)
   local ns = vim.api.nvim_create_namespace("grip_result_hints")
   vim.api.nvim_set_decoration_provider(ns, {
     on_win = function(_, win, buf)
       local render = sessions[buf] and sessions[buf]._render
-      if not (render and render.hint_row) then return false end
+      if not render then return false end
       local info = vim.fn.getwininfo(win)[1]
       if not info then return false end
       local width = info.width - info.textoff
+      if render.status_items then
+        local needed = #M.status(render.status_items, M.status_width(buf))
+        if needed ~= render.status_rows and not render.status_pending then
+          render.status_pending = true
+          -- Ephemeral virtual lines are not drawn by supported Neovim versions.
+          -- Reserve real footer rows for the narrowest window, then only pack
+          -- their overlays per window. Data coordinates remain unchanged.
+          vim.schedule(function()
+            local session = sessions[buf]
+            if session and session._render == render and vim.api.nvim_buf_is_valid(buf) then
+              require('dadbod-grip.view').render(buf, session.state)
+            end
+          end)
+        end
+        local rows = M.status(render.status_items, width)
+        for i = 1, render.status_rows do
+          local row, used = rows[i] or {}, 0
+          for _, part in ipairs(row) do used = used + vim.fn.strdisplaywidth(part[1]) end
+          row[#row + 1] = {string.rep(' ', math.max(0, width - used)), 'Normal'}
+          vim.api.nvim_buf_set_extmark(buf, ns, render.status_row + i - 1, 0, {
+            virt_text = row, virt_text_win_col = 0, virt_text_pos = 'overlay', ephemeral = true,
+          })
+        end
+      end
       if render.query_time_row then
         local text = require("dadbod-grip.ui").pad_display(M.query_time(render.query_elapsed_ms, width), width, false)
         vim.api.nvim_buf_set_extmark(buf, ns, render.query_time_row, 0, {
@@ -63,6 +119,7 @@ function M.attach(sessions)
           virt_text_pos = "overlay", ephemeral = true,
         })
       end
+      if not render.hint_row then return false end
       local key = width .. ":" .. vim.o.ambiwidth
       local lines = render.hint_cache[key]
       if not lines then
