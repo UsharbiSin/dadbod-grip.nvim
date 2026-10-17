@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-10-17
+
+### Added
+
+- The built-in demo includes an incident summary view on both engines, plus a DuckDB reporting schema, monthly report, and severity macro. The walkthrough teaches daily browsing, editing, review, export, history, and saved-query tasks with ASCII guides.
+- An optional local PostgreSQL lab demonstrates nested partitions, a view, and function source browsing.
+
+### Fixed
+
+- The keymap catalog describes `gN` as a database column rename with confirmation, matching its existing behavior.
+
+## [3.14.0] - 2026-10-17
+
+### Added
+
+- Welcome keeps the DBG logo and offers four actionable start rows. Enter
+  activates a row; Tab and Shift-Tab move between actions. It fits both a full
+  window and the shared workspace, using effective configured key hints.
+- Existing welcome shortcuts are now cataloged and support remap/disable
+  settings. Their default keys and the hidden Chonk cameo are preserved.
+- Chonk's Table Hug drawing appears in the About section at the end
+  of in-app help, with "Chonk holds the center" beneath it.
+
+### Changed
+
+- The demo focuses its first bundled SQL block after the workspace is ready.
+  It does not run the query automatically.
+- In-app help uses the current pane's action catalog, effective keys, and
+  contextual number-key behavior. Query-pad help describes its own actions.
+- The welcome diagram labels its effective schema, SQL, and table keys, with
+  run and zoom/restore hints nearby. Other panes retain their contextual keys.
+
+### Fixed
+
+- Result shortcut hints fit in two rows using each window's width and configured
+  keys. Narrow windows prioritize core actions and help; an ellipsis marks
+  omitted hints when it fits. Table data keeps its horizontal scrolling.
+- Opening SQL while another pane is zoomed restores its split layout. Opening
+  SQL in the same zoomed window preserves its zoom, draft, and cursor position.
+
 ## [3.13.0] - 2026-10-16
 
 ### Fixed
@@ -704,7 +744,9 @@ older tags are left in place so anyone pinned to them keeps working.
 - **joryeugene** — SQL Server adapter, PostgreSQL routines in the schema sidebar, focused ER diagram
   ([PR #17](https://github.com/joryeugene/dadbod-grip.nvim/pull/17)).
 
-[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...HEAD
+[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.15.0...HEAD
+[3.15.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.14.0...v3.15.0
+[3.14.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...v3.14.0
 [3.13.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.12.0
 [3.11.1]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.11.1
