@@ -788,6 +788,11 @@ local function build_render(session, opts)
     timing_str = session.elapsed_ms .. "ms " .. action
     table.insert(status_parts, timing_str)
   end
+  local write_ms = session._write_times and session._write_times[st.rows]
+  if write_ms ~= nil and require("dadbod-grip").get_opts().show_result_time ~= false then
+    local duration = write_ms < 1000 and (write_ms .. "ms") or ui.format_elapsed(write_ms)
+    table.insert(status_parts, "Write: " .. duration .. " client")
+  end
   if staged_count > 0 then table.insert(status_parts, staged_count .. " staged") end
   if st.readonly and not is_editable(session) then table.insert(status_parts, "read-only") end
   local hidden_n = 0
@@ -1417,6 +1422,10 @@ function M.open(state, url, query_sql, opts)
     hidden_columns = {},
     elapsed_ms = opts and opts.elapsed_ms or nil,
     _query_times = setmetatable(opts and opts.elapsed_ms ~= nil and { [state.rows] = opts.elapsed_ms } or {},
+      { __mode = "k" }),
+    _write_times = setmetatable(opts and opts.write_elapsed_ms ~= nil and { [state.rows] = opts.write_elapsed_ms } or {},
+      { __mode = "k" }),
+    _write_engine_times = setmetatable(opts and opts.write_engine_timing and { [state.rows] = opts.write_engine_timing } or {},
       { __mode = "k" }),
     write_mode = (opts and opts.write == true) and true or false,
     pinned = false,

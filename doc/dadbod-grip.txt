@@ -162,6 +162,24 @@ duration in milliseconds. The footer stays visible during horizontal data
 scrolling; narrow windows shorten its label. If the SELECT fails or is
 interrupted, the previous result and its original duration stay in place.
 
+Mutation previews and confirmed database writes use the same loading clock.
+This includes staged apply (also imported rows), local file write-back,
+committed-transaction undo, and DDL. A write finishes its clock before its
+separate SELECT reload begins. After that reload succeeds, the status line
+keeps "Write: 1.4s client" alongside the SELECT's own Query duration. Write
+measures the db.execute call, including client startup and lock waits; it is
+not server execution time. That Write duration belongs to those refreshed
+rows: metadata and later unrelated SELECT results do not inherit it.
+Successful apply history also keeps the write duration in milliseconds.
+
+Import parsing/staging and AI generation are not database writes. The loading
+clock updates while client waits pump Neovim's event loop; CPU-only local
+preview staging can pause animation. An interrupted client wait closes the
+indicator but does not prove the server stopped or rolled back the write.
+Grip reports the database outcome as unknown for interrupted/timed-out client
+waits. Refresh and check the database before retrying. If you navigate or edit
+while a write waits, its completion keeps your newer view and staging intact.
+
 Set `open_sidebar = false` to connect directly into the main workspace. The
 sidebar remains available through :GripSchema, `gb`, or `1`.
 

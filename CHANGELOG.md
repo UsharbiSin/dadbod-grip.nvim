@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mutation previews and confirmed writes show the loading clock, including
+  staged/import apply, local file write-back, transaction undo, and DDL.
+  Successful write/reload results retain a distinct `Write: ... client` time
+  alongside their own SELECT duration; later unrelated results do not inherit
+  it. Staged apply history now records its client write duration.
+  Completion preserves navigation and edits made while waiting. Interrupted
+  or timed-out client waits report an unknown database outcome before retry.
 - The loading float shows live elapsed time after half a second (`3.4s`,
   `1m12s` past a minute). Nested steps keep the outer operation's clock, and
   long labels shorten to keep the time visible. The timer stops when the

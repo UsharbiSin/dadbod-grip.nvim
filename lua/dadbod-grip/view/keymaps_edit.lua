@@ -4,7 +4,6 @@
 -- bearing.
 
 local data   = require("dadbod-grip.data")
-local db     = require("dadbod-grip.db")
 local qmod   = require("dadbod-grip.query")
 local sql    = require("dadbod-grip.sql")
 
@@ -103,32 +102,43 @@ function M.setup(bufnr, ctx)
     -- Mutation preview mode: execute the pending mutation
     if session.pending_mutation then
       local pm = session.pending_mutation
+      local current_win = vim.api.nvim_get_current_win()
+      local is_current = require("dadbod-grip.write").capture_owner(bufnr, session)
+      local function can_reload()
+        return is_current() and vim.api.nvim_win_is_valid(current_win)
+          and vim.api.nvim_win_get_buf(current_win) == bufnr
+          and vim.api.nvim_get_current_win() == current_win
+      end
       local choice = vim.fn.confirm(
         string.format("Execute %s? (%d row%s affected)\n\n%s",
           pm.type, pm.row_count, pm.row_count == 1 and "" or "s",
           pm.sql:sub(1, 200)),
         "&Execute\n&Cancel", 2)
       if choice ~= 1 then return end
-      local t0 = vim.uv.hrtime()
-      local _, err = db.execute(pm.sql, session.url)
-      local ms = math.floor((vim.uv.hrtime() - t0) / 1e6)
+      local written, err, ms, unknown = require("dadbod-grip.write").execute(pm.sql, session.url, pm.table_name)
       if err then
-        vim.notify("Failed: " .. err, vim.log.levels.ERROR)
+        vim.notify((unknown and "" or "Failed: ") .. err, vim.log.levels.ERROR)
         return
       end
       vim.notify(string.format("%s executed (%dms, %d row%s)",
         pm.type, ms, pm.row_count, pm.row_count == 1 and "" or "s"), vim.log.levels.INFO)
       local history = require("dadbod-grip.history")
       history.record({ sql = pm.sql, url = session.url, type = pm.type:lower(), elapsed_ms = ms })
+      local still_current = can_reload()
+      -- Clear only the SQL that just committed, even if a newer window gained
+      -- focus. It must not remain offered as an executable pending mutation.
+      if view._sessions[bufnr] == session and session.pending_mutation == pm then
+        session.pending_mutation = nil
+        session._mutation_title = nil
+      end
+      if not still_current then return end
       -- Clear mutation state and reopen the full table
       local tbl = pm.table_name
       local s_url = session.url
-      session.pending_mutation = nil
-      session._mutation_title = nil
       -- Reopen the full table (not the WHERE-filtered preview)
-      local current_win = vim.api.nvim_get_current_win()
       local grip = require("dadbod-grip")
-      grip.open(tbl, s_url, { reuse_win = current_win })
+      grip.open(tbl, s_url, { reuse_win = current_win, write_elapsed_ms = ms,
+        write_engine_timing = written and written.engine_timing, write_is_current = can_reload })
       return
     end
 
@@ -194,16 +204,21 @@ function M.setup(bufnr, ctx)
         "Undo last committed transaction? (" .. count .. " statement(s))",
         "&Yes\n&No", 2)
       if choice ~= 1 then return end
+      local is_current = require("dadbod-grip.write").capture_owner(bufnr, session)
       local txn = sql.wrap_transaction(reverse,
         require("dadbod-grip.adapters").kind(session.url))
-      local _, err = db.execute(txn, session.url)
+      local written, err, ms, unknown = require("dadbod-grip.write").execute(txn, session.url, "undo transaction")
       if err then
-        vim.notify("Undo failed: " .. err, vim.log.levels.ERROR)
+        vim.notify((unknown and "" or "Undo failed: ") .. err, vim.log.levels.ERROR)
         return
       end
-      table.remove(session._txn_undo_stack)
       vim.notify("Undid transaction (" .. count .. " statement(s))", vim.log.levels.INFO)
-      if session.on_refresh then session.on_refresh(bufnr) end
+      if not is_current() then return end
+      table.remove(session._txn_undo_stack)
+      if session.on_refresh then
+        session.on_refresh(bufnr, { write_elapsed_ms = ms, write_engine_timing = written and written.engine_timing,
+          is_current = is_current })
+      end
       return
     end
 
