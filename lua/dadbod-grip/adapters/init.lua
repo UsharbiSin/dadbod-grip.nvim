@@ -35,7 +35,7 @@ end
 ---
 --- @param args  string[]   argv for vim.system
 --- @param timeout_ms number|nil  process timeout in ms (default 30000)
---- @param opts table|nil  { stdin = string, env = table<string,string> } stdin
+--- @param opts table|nil  { stdin = string, env = table<string,string>, terminate_on_interrupt = boolean } stdin
 ---   to feed the process; the sqlserver adapter needs it for GO-separated
 ---   batches, which cannot be expressed as a single command-line statement.
 ---   env is merged into the inherited environment (vim.system's default
@@ -57,17 +57,36 @@ function M.run_cmd(args, timeout_ms, opts)
     stdin = opts and opts.stdin or nil,
     env = opts and opts.env or nil,
   }
-  local ok, err = pcall(vim.system, args, sys_opts, function(r)
+  local ok, process = pcall(vim.system, args, sys_opts, function(r)
     out = r
     done = true
   end)
   if not ok then
-    return "", tostring(err), 1
+    return "", tostring(process), 1
   end
   -- Poll at 1ms so done is detected immediately after the on_exit callback fires.
   -- The 80ms spinner timer fires when vim.wait pumps the event loop regardless of
   -- poll interval; tight polling just reduces per-call overhead in tests.
-  vim.wait(t + M._exit_grace_ms, function() return done end, 1)
+  if opts and opts.terminate_on_interrupt then
+    local waited, completed, reason = pcall(vim.wait, t + M._exit_grace_ms, function() return done end, 1)
+    if not waited or not completed then
+      -- Private profile calls own this child: stop it and drain on_exit before
+      -- the caller removes its artifact. SystemObj:wait escalates to SIGKILL
+      -- after its bounded wait; a second bounded drain covers delayed pipes.
+      pcall(process.kill, process, 15)
+      pcall(process.wait, process, 100)
+      if not done then
+        pcall(process.kill, process, 9)
+        pcall(process.wait, process, 1000)
+      end
+      local interrupted = not waited or reason == -2
+      local message = interrupted and "query interrupted; database outcome unknown" or "command timed out"
+      if not done then message = message .. "; process completion unknown" end
+      return "", message, interrupted and 130 or 124
+    end
+  else
+    vim.wait(t + M._exit_grace_ms, function() return done end, 1)
+  end
   local r = out or TIMED_OUT
   return r.stdout or "", r.stderr or "", r.code
 end

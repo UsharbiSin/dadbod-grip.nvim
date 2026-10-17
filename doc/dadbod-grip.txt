@@ -119,6 +119,7 @@ Override if needed: >lua
     limit            = 100,
     max_col_width    = 40,
     timeout          = 10000,
+    engine_timing    = false,
     completion       = true,
     connections_path = nil,
     picker           = "builtin",
@@ -167,6 +168,55 @@ duration in milliseconds. The footer stays visible during horizontal data
 scrolling; narrow windows shorten its label. If the SELECT fails or is
 interrupted, the previous result and its original duration stay in place.
 
+                                                        *grip-engine-timing*
+Set `engine_timing = true` to opt in to DuckDB profiler latency collection.
+The result footer adds a separate "Engine: 12.3ms DuckDB profiler latency"
+line. This is DuckDB's JSON-profile LATENCY for the statement that produced
+the result, converted from seconds to milliseconds. It includes the adapter's
+nested-value SELECT conversion. Attachment setup, CLI startup, and Lua result
+parsing are outside this metric. It is elapsed query latency, not cumulative
+operator CPU, network latency, or the execution time of a remote attached DB.
+The existing client clock keeps its own meaning. Collection is independent
+of timing display preferences and adds profiling overhead.
+Actual database writes also opt in. After a successful reload, "Write engine"
+retains the write's profiler latency separately from that SELECT's "Engine".
+Metadata and later unrelated refreshes inherit neither write duration.
+`show_result_time = false` hides Engine and Write engine with client timings;
+collection continues. `show_hints` controls Zen shortcuts independently.
+The first eligible call probes JSON/ALL support once using a synthetic SELECT
+in a fresh in-memory client without an init file or attachments. Results are
+cached per executable identity; its time belongs to that first client clock.
+An unsupported client keeps the normal query path with absent engine timing.
+Cancelling or timing out the probe aborts the request before user SQL starts.
+
+Only eligible single statements are profiled. Batches, transaction wrappers,
+session/profiling commands, and conservatively unsupported syntax keep the
+normal conversion/compatibility path and report unsupported timing. A profile must
+match the submitted adapter statement exactly (apart from outer whitespace).
+Missing, malformed, or mismatched profiles report unavailable timing. Neither
+absence becomes a numeric zero. An enabled profile never runs EXPLAIN ANALYZE
+or retries its statement; its wrapper errors are returned without compatibility
+fallback. When profiling is disabled, legacy conversion/fallback is preserved.
+DuckDB JSON profiling with ALL coverage is required; this
+collector is exercised against DuckDB 1.5.5.
+
+Each profile is written inside a new private temporary directory (0700) and
+removed after success, failure, timeout, interruption, or parsing failure.
+No database privileges or settings are changed persistently. Timing does not
+change transaction semantics or promise rollback after a failed batch.
+
+The additive Lua facade also accepts per-call options: >lua
+  local db = require("dadbod-grip.db")
+  local result, err = db.query("SELECT 42", url, { engine_timing = true })
+  local written, write_err = db.execute(sql, url, { engine_timing = true })
+<
+Successful results gain `engine_timing`: status is "available", "unsupported",
+or "unavailable". Only "available" has `elapsed_ms`; DuckDB also identifies
+`source = "duckdb_profile"` and `scope = "statement"`. Absent data has a
+machine-readable `reason`. Calls without the option keep their existing
+result shape. PostgreSQL, MySQL/MariaDB, SQL Server, and SQLite currently
+return "unsupported"; their client durations remain available as before.
+See doc/engine-timing.md for the support matrix and upstream metric contracts.
 Mutation previews and confirmed database writes use the same loading clock.
 This includes staged apply (also imported rows), local file write-back,
 committed-transaction undo, and DDL. A write finishes its clock before its

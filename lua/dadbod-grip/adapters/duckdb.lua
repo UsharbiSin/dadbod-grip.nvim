@@ -6,6 +6,7 @@ local db_util  = require("dadbod-grip.db")
 local adapters = require("dadbod-grip.adapters")
 local sql_util = require("dadbod-grip.sql")
 local esc      = sql_util.escape_literal
+local timing   = require("dadbod-grip.engine_timing")
 
 local M = {}
 
@@ -496,7 +497,7 @@ local function duckdb_args(db, opts, flags)
   return args
 end
 
-local function duckdb(db_path, sql_str, timeout_ms, url)
+local function duckdb(db_path, sql_str, timeout_ms, url, opts)
   local setup_sql = ""
   local effective_timeout = timeout_ms or adapters.configured_timeout(DEFAULT_TIMEOUT)
 
@@ -520,10 +521,14 @@ local function duckdb(db_path, sql_str, timeout_ms, url)
     effective_timeout = math.max(effective_timeout, NETWORK_TIMEOUT)
   end
 
-  local effective_sql, has_setup = with_csv_setup(setup_sql, sql_str)
-
   local args = duckdb_args(db_path, adapters.session_opts(), { "-csv", "-header" })
-  local stdout, stderr, code = adapters.run_cmd(args, effective_timeout, { stdin = effective_sql })
+  local profile = timing.prepare(sql_str, opts)
+  local effective_sql, has_setup = with_csv_setup(setup_sql, (profile and profile.prefix or "") .. sql_str)
+
+  local stdout, stderr, code, engine = timing.run(profile, function()
+    return adapters.run_cmd(args, effective_timeout, { stdin = effective_sql,
+      terminate_on_interrupt = profile and profile.path ~= nil })
+  end)
   if has_setup then stdout = strip_csv_setup(stdout) end
 
   -- Track httpfs install state from stderr output
@@ -540,7 +545,7 @@ local function duckdb(db_path, sql_str, timeout_ms, url)
   -- The ATTACH prefix carried the attachment DSNs into this process; a failing
   -- attachment gets them quoted back. Masked here rather than at each of the
   -- ~15 places that return this stderr onwards.
-  return stdout, redact_query_error(stderr, url), code
+  return stdout, redact_query_error(stderr, url), code, engine, profile and profile.path ~= nil
 end
 
 --- Assigned here (after duckdb() is in scope) so the upvalue resolves correctly.
@@ -580,11 +585,11 @@ local function duckdb_async(db_path, sql_str, timeout_ms, url, callback)
 end
 
 --- Run DML without CSV mode (to get change count output).
-local function duckdb_exec(db_path, sql_str, timeout_ms, url)
-  local effective_sql = sql_str
+local function duckdb_exec(db_path, sql_str, timeout_ms, url, opts)
+  local setup_sql = ""
   local effective_timeout = timeout_ms or adapters.configured_timeout(DEFAULT_TIMEOUT)
   if url then
-    effective_sql = build_attach_prefix(url) .. effective_sql
+    setup_sql = build_attach_prefix(url)
     -- Same one-off extension fetch as in duckdb(): a DML statement against an
     -- attached table is as likely to be the first call of the session as a SELECT.
     if attach_install_pending(url) then
@@ -593,10 +598,15 @@ local function duckdb_exec(db_path, sql_str, timeout_ms, url)
   end
 
   local args = duckdb_args(db_path, adapters.session_opts())
+  local profile = timing.prepare(sql_str, opts)
+  local effective_sql = setup_sql .. (profile and profile.prefix or "") .. sql_str
   -- Same reason as in duckdb(): the ATTACH prefix is in this SQL.
-  local stdout, stderr, code = adapters.run_cmd(args, effective_timeout, { stdin = effective_sql })
+  local stdout, stderr, code, engine = timing.run(profile, function()
+    return adapters.run_cmd(args, effective_timeout, { stdin = effective_sql,
+      terminate_on_interrupt = profile and profile.path ~= nil })
+  end)
   if url then note_ext_installed(url, code) end
-  return stdout, redact_query_error(stderr, url), code
+  return stdout, redact_query_error(stderr, url), code, engine
 end
 
 --- Statement kinds a subquery can hold. Everything else -- DESCRIBE (db.describe_file
@@ -611,7 +621,7 @@ local function strip_leading_noise(s)
   while true do
     local t = (s:gsub("^%s+", ""))
     if t:sub(1, 2) == "--" then
-      t = (t:gsub("^%-%-[^\n]*\n?", ""))
+      t = (t:gsub("^%-%-[^\r\n]*[\r\n]?", ""))
     elseif t:sub(1, 2) == "/*" then
       local close = t:find("*/", 3, true)
       if not close then return t end
@@ -661,7 +671,8 @@ local function nested_json_sql(sql_str)
   return string.format(NESTED_JSON_TEMPLATE, body)
 end
 
-function M.query(sql_str, url)
+function M.query(sql_str, url, opts)
+  if type(opts) ~= "table" then opts = nil end
   if vim.fn.executable("duckdb") == 0 then
     return nil, "duckdb not found. Install duckdb."
   end
@@ -669,17 +680,35 @@ function M.query(sql_str, url)
   local db_path = extract_path(url)
   if not db_path then return nil, "Invalid DuckDB URL: " .. url end
 
+  local requested = opts and opts.engine_timing == true
   local wrapped = nested_json_sql(sql_str)
-  local stdout, stderr, code
-  if wrapped then
-    stdout, stderr, code = duckdb(db_path, wrapped, nil, url)
+  local absent
+  if requested then
+    local single, reason = timing.statement(sql_str)
+    -- Eligibility controls collection only. If the legacy wrapper would need
+    -- compatibility fallback (e.g. a terminal semicolon followed by a comment),
+    -- keep that exact conversion/fallback path without enabling profiling.
+    if not single or nested_json_sql(single) ~= wrapped then
+      absent = timing.unsupported(reason or "unsupported_statement")
+      opts = nil
+    else
+      local probe_err
+      opts, absent, probe_err = timing.options(opts)
+      if probe_err then return nil, probe_err end
+    end
   end
-  -- The rewrite is an enhancement, never a new failure mode: a DuckDB too old for
+  local stdout, stderr, code, engine, profiled
+  if wrapped then
+    stdout, stderr, code, engine, profiled = duckdb(db_path, wrapped, nil, url, opts)
+  end
+  -- Without profiling, the rewrite is an enhancement: a DuckDB too old for
   -- COLUMNS(...) AS "\1", or a statement the subquery cannot hold after all, falls
   -- back to the original query -- and to its own error message, so a genuinely
   -- broken user query still reports what is wrong with it, not with the wrapper.
-  if not wrapped or code ~= 0 then
-    stdout, stderr, code = duckdb(db_path, sql_str, nil, url)
+  -- Once profiling is actually enabled, never retry the failed wrapper/query.
+  -- A failed private-directory setup leaves the legacy compatibility path.
+  if not wrapped or (code ~= 0 and not profiled) then
+    stdout, stderr, code, engine = duckdb(db_path, sql_str, nil, url, opts)
   end
   if code ~= 0 then
     local msg = stderr ~= "" and stderr or ("duckdb exited with code " .. code)
@@ -701,6 +730,7 @@ function M.query(sql_str, url)
     rows = parsed.rows,
     columns = parsed.columns,
     primary_keys = {},
+    engine_timing = engine or absent,
   }, nil
 end
 
@@ -1150,7 +1180,8 @@ function M.get_table_stats(table_name, url)
   }, nil
 end
 
-function M.execute(sql_str, url)
+function M.execute(sql_str, url, opts)
+  if type(opts) ~= "table" then opts = nil end
   if vim.fn.executable("duckdb") == 0 then
     return nil, "duckdb not found. Install duckdb."
   end
@@ -1158,7 +1189,18 @@ function M.execute(sql_str, url)
   local db_path = extract_path(url)
   if not db_path then return nil, "Invalid DuckDB URL: " .. url end
 
-  local stdout, stderr, code = duckdb_exec(db_path, sql_str, nil, url)
+  local absent
+  if opts and opts.engine_timing == true then
+    local single, reason = timing.statement(sql_str)
+    if not single then absent = timing.unsupported(reason); opts = nil
+    else
+      local probe_err
+      opts, absent, probe_err = timing.options(opts)
+      if probe_err then return nil, probe_err end
+    end
+  end
+
+  local stdout, stderr, code, engine = duckdb_exec(db_path, sql_str, nil, url, opts)
   if code ~= 0 then
     local msg = stderr ~= "" and stderr or ("duckdb exited with code " .. code)
     return nil, msg
@@ -1166,7 +1208,7 @@ function M.execute(sql_str, url)
 
   -- DuckDB text mode outputs "Changes: N" or row counts
   local n = stdout:match("(%d+)") or "0"
-  return { affected = tonumber(n) or 0, message = n .. " row(s) affected" }, nil
+  return { affected = tonumber(n) or 0, message = n .. " row(s) affected", engine_timing = engine or absent }, nil
 end
 
 --- Resolve relative file paths in a DSN to absolute paths.

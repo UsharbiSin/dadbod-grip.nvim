@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in `engine_timing = true` collects DuckDB profiler latency during the
+  original single-statement run and shows a distinct Engine footer. Batches
+  and other adapters report unsupported timing; missing or invalid profiles
+  report unavailable timing. Collection defaults off; an enabled profile never
+  reruns its statement.
 - Opt-in Zen display with `show_hints = false` and the session-wide `:GripZen`
   toggle. Automatic grid, SQL pad, sidebar, and welcome shortcuts can be hidden
   independently of timing and pane layout. Essential result status and explicit

@@ -32,7 +32,11 @@ function M.execute(sql, url, label)
   -- or client timeout. The child/server may have committed before it stopped,
   -- or may still be running after vim.wait returned: no automatic retry.
   local unknown = written.err == "command timed out"
+    or written.err == "command timed out; process completion unknown"
+    or written.err == "query interrupted; database outcome unknown"
+    or written.err == "query interrupted; database outcome unknown; process completion unknown"
     or (written.err and written.err:match("^[%w_-]+ exited with code 124$") ~= nil)
+    or (written.err and written.err:match("^[%w_-]+ exited with code 130$") ~= nil)
   if unknown then
     written.err = "Write wait interrupted or timed out; database outcome is unknown. Refresh before retrying.\n"
       .. written.err
