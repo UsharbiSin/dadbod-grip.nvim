@@ -148,6 +148,13 @@ e2e-visual: seed-sqlite
         exit 1
       fi
     }
+    wait_import_stage() {
+      if ! timeout 8s bash tests/fixtures/wait_tmux_stage.sh "$session" "$sync-$1"; then
+        echo "e2e-visual timed out waiting for $1" >&2
+        tmux capture-pane -p -t "$session" >&2 || true
+        exit 1
+      fi
+    }
     snapshot() {
       printf '\n=== %s ===\n' "$1"
       tmux capture-pane -p -t "$session"
@@ -185,9 +192,7 @@ e2e-visual: seed-sqlite
     wait_text "Import 2 CSV rows"
     snapshot "GripImport preview prompt"
     tmux send-keys -t "$session" y Enter
-    wait_text "Press ENTER or type command to continue"
-    tmux send-keys -t "$session" Enter
-    wait_for import-staged
+    wait_import_stage import-staged
     tmux send-keys -t "$session" '$'
     wait_text "2 staged"
     snapshot "GripImport staged indicator"
@@ -206,16 +211,12 @@ e2e-visual: seed-sqlite
     send_import
     wait_text "Import 2 CSV rows"
     tmux send-keys -t "$session" y Enter
-    wait_text "Press ENTER or type command to continue"
-    tmux send-keys -t "$session" Enter
-    wait_for import-restaged
+    wait_import_stage import-restaged
     tmux send-keys -t "$session" a
     wait_text "Apply 2 staged change"
     snapshot "GripImport apply confirmation"
     tmux send-keys -t "$session" a
-    wait_text "Press ENTER or type command to continue"
-    tmux send-keys -t "$session" Enter
-    wait_for import-applied
+    wait_import_stage import-applied
     tmux send-keys -t "$session" G
     wait_text "E2E Import One"
     snapshot "GripImport committed rows"
