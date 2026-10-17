@@ -141,8 +141,11 @@ These commands cover the normal path:
 | `:GripImport` | Previews and stages CSV, TSV, or JSON rows from the clipboard or `!command`. |
 | `:GripHome` | Returns to the welcome screen. |
 | `:GripZoom` | Maximizes the current pane or restores its split layout. |
+| `:GripZen` | Toggles automatic shortcut hints across the session. |
 
 A slow query counts up while it runs: past half a second the loading float appends live elapsed time (`querying users... 3.4s`), so a long wait is legible before the grid appears. After a successful query, the results footer keeps its client-observed query duration, such as `Query: 3.4s client`.
+
+After a successful write and reload, the footer keeps `Write: ... client` for the database write and a separate `Query` duration for the SELECT that refreshes the grid. An interrupted or timed-out client wait leaves the database outcome unknown. Refresh and check the database before retrying the write.
 
 In the query pad, `<C-CR>` runs SQL and `gA` generates SQL. In the grid, `f` filters by the current cell, `s` sorts the current column, `gf` follows a foreign key, and `gE` exports to the clipboard.
 
@@ -179,10 +182,18 @@ require("dadbod-grip").setup({
   timeout = 10000,
   completion = true,
   open_sidebar = true,
+  show_running_time = true,
+  show_result_time = true,
+  show_hints = true,
+  engine_timing = false,
 })
 ```
 
 Set `open_sidebar = false` to connect directly into the main workspace. Set `completion = false` when another completion engine owns SQL suggestions. Set `ai = false` to skip SQL generation and schema preloading; the AI keys remain registered and explain that AI is disabled.
+
+Set `show_running_time = false` to hide the loading counter or `show_result_time = false` to hide retained timing labels. Set `show_hints = false` for Zen display, or use `:GripZen` to toggle it during the session. These controls are independent; Zen keeps essential status and explicit `?` help available without changing pane layout.
+
+Set `engine_timing = true` to collect DuckDB profiler latency during an eligible single statement's original execution. Profiling adds overhead and never reruns the statement. Batches and other adapters report unsupported timing; missing or invalid profiles report unavailable timing. See `:help grip-engine-timing` for the metric and support limits.
 
 All default values, picker integrations, connection fields, remappable actions, and AI-provider options live in `:help grip-config` and the [getting-started guide](https://jorypestorious.com/dadbod-grip-web/docs/getting-started).
 Welcome actions are also configurable, for example `keymaps = { welcome_next = "<F2>", welcome_activate = "<F3>" }`. Setting an action to `false` removes its mapping. Welcome keeps command fallbacks visible, and `?` shows effective keys for the current pane. The palette remains available in the grid, query pad, and sidebar.
