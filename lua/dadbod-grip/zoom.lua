@@ -58,6 +58,13 @@ local function restore(tab, state)
   end)
 end
 
+-- Reveal an explicitly opened pane without ending zoom on its existing owner.
+function M.restore_for(win)
+  local tab = vim.api.nvim_get_current_tabpage()
+  local state = saved[tab]
+  if state and state.win ~= win then restore(tab, state) end
+end
+
 function M.toggle()
   local tab, win = vim.api.nvim_get_current_tabpage(), vim.api.nvim_get_current_win()
   if saved[tab] then return restore(tab, saved[tab]) end

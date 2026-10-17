@@ -487,6 +487,10 @@ All commands are global and available after the plugin loads.
   recovers usable sizes for the remaining panes. Floating panes are not maximized;
   close their popup first, then zoom the underlying split.
 
+  Opening the query pad while another split is zoomed restores the layout
+  first, so the SQL window is usable. Reopening the already zoomed query-pad
+  window keeps its zoom. Native window navigation does not change zoom.
+
   Remap or disable only this shortcut with setup({ keymaps = { zoom = ... } }).
   Native <C-w>h/j/k/l and <C-w>w still navigate windows. <C-w>= equalizes
   sizes rather than restoring a saved layout. Avoid :only for temporary
