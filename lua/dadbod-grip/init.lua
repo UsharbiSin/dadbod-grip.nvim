@@ -794,26 +794,42 @@ end
 
 --- Render what fetch_refresh returned. Kept outside the spinner float so the
 --- grid repaints after it is torn down, the same order init.open() uses.
-local function apply_refresh(bufnr, fetched)
+local function apply_refresh(bufnr, fetched, owner, generation, query_update)
+  local session = view._sessions[bufnr]
+  if session ~= owner or not session or not vim.api.nvim_buf_is_valid(bufnr)
+      or session._refresh_generation ~= generation then return end
   if not fetched or not fetched.result then
     vim.notify("Grip: query failed: " .. tostring((fetched and fetched.err) or "unknown error"),
       vim.log.levels.ERROR)
     return
   end
   local new_state = data.new(fetched.result)
-  local session = view._sessions[bufnr]
-  if session then
-    session.elapsed_ms = fetched.elapsed_ms
-    session.last_action = "query"
+  -- Publish identity/count/rows/time together only after a successful SELECT.
+  if query_update then
+    session.query_spec = query_update.spec
+    session.query_sql = query_update.sql
+    session.total_rows = query_update.total_rows
   end
+  session.elapsed_ms = fetched.elapsed_ms
+  session.last_action = "query"
+  session._query_times[new_state.rows] = fetched.elapsed_ms
   view.render(bufnr, new_state)
 end
 
+local function begin_refresh(bufnr)
+  local session = view._sessions[bufnr]
+  if not session or not vim.api.nvim_buf_is_valid(bufnr) then return end
+  session._refresh_generation = (session._refresh_generation or 0) + 1
+  return session, session._refresh_generation
+end
+
 local function do_refresh(bufnr, url, query_sql, table_name)
+  local owner, generation = begin_refresh(bufnr)
+  if not owner then return end
   local fetched = ui.blocking("  querying " .. spinner_label(table_name) .. "...", function()
     return fetch_refresh(url, query_sql, table_name)
   end)
-  apply_refresh(bufnr, fetched)
+  apply_refresh(bufnr, fetched, owner, generation)
 end
 
 -- ── edit cell ─────────────────────────────────────────────────────────────
@@ -1353,37 +1369,31 @@ function M.open(arg, url, opts)
       do_refresh(bid, conn, sql_str, current_table)
     end,
     on_requery = function(bid, new_spec)
-      local s = view._sessions[bid]
+      local s, generation = begin_refresh(bid)
       if not s then return end
 
-      -- Sort / filter / page changes are two round-trips (COUNT then the page
-      -- itself). Both run inside one spinner: do_refresh's own float would
-      -- otherwise only cover the second, leaving the COUNT looking like a hang.
+      -- COUNT and SELECT share a spinner, but pending metadata must not
+      -- replace the displayed result's identity if SELECT fails/interruption
+      -- returns an error, or a newer refresh completes while this one waits.
       local new_sql, page_fetch
+      local pending_total = s.total_rows
       ui.blocking("  querying " .. spinner_label(table_name_arg) .. "...", function()
-        -- Run count query for pagination
         local count_sql = query.build_count_sql(new_spec)
         local count_result = db.query(count_sql, conn)
         if count_result and count_result.rows[1] then
-          s.total_rows = tonumber(count_result.rows[1][1]) or 0
+          pending_total = tonumber(count_result.rows[1][1]) or 0
         end
-
-        -- Clamp page to valid range
-        if s.total_rows then
-          local total_pages = math.max(1, math.ceil(s.total_rows / new_spec.page_size))
-          if new_spec.page > total_pages then
-            new_spec = query.set_page(new_spec, total_pages)
-          end
+        if pending_total then
+          local total_pages = math.max(1, math.ceil(pending_total / new_spec.page_size))
+          if new_spec.page > total_pages then new_spec = query.set_page(new_spec, total_pages) end
         end
-
         new_sql = query.build_sql(new_spec)
         page_fetch = fetch_refresh(conn, new_sql, table_name_arg)
       end)
-
-      s.query_spec = new_spec
-      s.query_sql = new_sql
-      apply_refresh(bid, page_fetch)
+      apply_refresh(bid, page_fetch, s, generation,
+        { spec = new_spec, sql = new_sql, total_rows = pending_total })
     end,
+
     on_apply = function(bid)
       do_apply(bid, conn)
     end,

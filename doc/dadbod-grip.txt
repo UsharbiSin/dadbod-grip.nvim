@@ -140,6 +140,28 @@ connections file shared across projects.
 extension or read a remote URL gets a 60-second minimum for that network step.
 Health pings use 5 seconds.
 
+                                                        *grip-query-timer*
+Operations wrapped in grip's loading float, such as opening a table or
+generating SQL, show a centered indicator. Once the work passes half a
+second the float starts counting up next to its label, so the wait is
+visible before the grid appears: >
+    querying users... 3.4s
+    generating SQL... 1m12s
+<
+The reading is wall time for the whole operation, including nested steps,
+and is not configurable. It resets for the next operation. Long labels are
+shortened to keep the elapsed time visible. The counter measures waiting;
+it does not report database progress or identify a hung query. CLI timeouts
+apply separately to each call, so a multi-step operation may take longer.
+After a successful query, the results footer keeps its client-observed
+round-trip, such as "Query: 3.4s client" or "Query: 17ms client". This duration
+measures db.query, including the client process and result parsing. It excludes
+column/primary-key lookups, pagination counts, and rendering, so it can be
+shorter than the running whole-operation clock. History keeps the same query
+duration in milliseconds. The footer stays visible during horizontal data
+scrolling; narrow windows shorten its label. If the SELECT fails or is
+interrupted, the previous result and its original duration stay in place.
+
 Set `open_sidebar = false` to connect directly into the main workspace. The
 sidebar remains available through :GripSchema, `gb`, or `1`.
 

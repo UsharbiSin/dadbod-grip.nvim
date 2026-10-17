@@ -34,6 +34,19 @@ function M.pack(items, width)
   return result
 end
 
+-- Query time is observed by this client around db.query, not server execution.
+-- Keep milliseconds useful for fast queries and share the loading timer's
+-- seconds/minutes format for longer ones.
+function M.query_time(ms, width)
+  local ui = require("dadbod-grip.ui")
+  local duration = ms < 1000 and (ms .. "ms") or ui.format_elapsed(ms)
+  for _, label in ipairs({ " Query: " .. duration .. " client", " Q: " .. duration .. " client",
+      " " .. duration .. " client", " Q:" .. duration, " " .. duration }) do
+    if vim.fn.strdisplaywidth(label) <= width then return label end
+  end
+  return ui.truncate_display(" " .. duration, width)
+end
+
 function M.attach(sessions)
   local ns = vim.api.nvim_create_namespace("grip_result_hints")
   vim.api.nvim_set_decoration_provider(ns, {
@@ -43,6 +56,13 @@ function M.attach(sessions)
       local info = vim.fn.getwininfo(win)[1]
       if not info then return false end
       local width = info.width - info.textoff
+      if render.query_time_row then
+        local text = require("dadbod-grip.ui").pad_display(M.query_time(render.query_elapsed_ms, width), width, false)
+        vim.api.nvim_buf_set_extmark(buf, ns, render.query_time_row, 0, {
+          virt_text = { { text, "GripStatusOk" } }, virt_text_win_col = 0,
+          virt_text_pos = "overlay", ephemeral = true,
+        })
+      end
       local key = width .. ":" .. vim.o.ambiwidth
       local lines = render.hint_cache[key]
       if not lines then

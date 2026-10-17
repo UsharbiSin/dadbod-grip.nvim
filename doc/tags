@@ -62,6 +62,7 @@ grip-picker	dadbod-grip.txt	/*grip-picker*
 grip-pinned-max	dadbod-grip.txt	/*grip-pinned-max*
 grip-profiling	dadbod-grip.txt	/*grip-profiling*
 grip-query-pad	dadbod-grip.txt	/*grip-query-pad*
+grip-query-timer	dadbod-grip.txt	/*grip-query-timer*
 grip-readonly	dadbod-grip.txt	/*grip-readonly*
 grip-requirements	dadbod-grip.txt	/*grip-requirements*
 grip-s3-files	dadbod-grip.txt	/*grip-s3-files*

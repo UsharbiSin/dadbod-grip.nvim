@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The loading float shows live elapsed time after half a second (`3.4s`,
+  `1m12s` past a minute). Nested steps keep the outer operation's clock, and
+  long labels shorten to keep the time visible. The timer stops when the
+  operation finishes, fails, or its float closes.
+- The results footer retains the successful query's client-observed duration
+  (`Query: 17ms client`, `Query: 1.6s client`). It stays visible during
+  horizontal data scrolling and adapts to each window's width. Staged edits
+  retain that result's duration. If the SELECT fails or is interrupted, the
+  previous result and its duration stay intact.
+
 ## [3.15.0] - 2026-10-17
 
 ### Added

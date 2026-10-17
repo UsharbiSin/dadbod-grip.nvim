@@ -783,8 +783,8 @@ local function build_render(session, opts)
   end
 
   local timing_str
-  if session.elapsed_ms then
-    local action = session.last_action or "query"
+  if session.elapsed_ms and session.last_action and session.last_action ~= "query" then
+    local action = session.last_action
     timing_str = session.elapsed_ms .. "ms " .. action
     table.insert(status_parts, timing_str)
   end
@@ -812,6 +812,16 @@ local function build_render(session, opts)
     local staged_text = staged_count .. " staged"
     local s, e = status_str:find(staged_text, 1, true)
     if s then push_mark(#lines, s - 1, e, "GripStatusChg") end
+  end
+
+  -- One result owns its query timing. Ordinary staged edits share immutable
+  -- rows; FK/metadata results have different rows, and nav-back restores the
+  -- original rows. Weak keys keep only durations whose results are still held.
+  local query_elapsed_ms = session._query_times and session._query_times[st.rows]
+  local query_time_row
+  if query_elapsed_ms ~= nil then
+    query_time_row = #lines
+    table.insert(lines, require("dadbod-grip.result_hints").query_time(query_elapsed_ms, math.huge))
   end
 
   -- ── Filter lines (one per active clause: always fully visible, never truncated) ──
@@ -863,7 +873,7 @@ local function build_render(session, opts)
   table.insert(lines, "")
 
   local data_start = has_type_row and 5 or 4
-  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {} }
+  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {}, query_time_row = query_time_row, query_elapsed_ms = query_elapsed_ms }
 end
 
 -- ── namespace for extmarks ───────────────────────────────────────────────
@@ -1406,6 +1416,8 @@ function M.open(state, url, query_sql, opts)
     opts = opts or {},
     hidden_columns = {},
     elapsed_ms = opts and opts.elapsed_ms or nil,
+    _query_times = setmetatable(opts and opts.elapsed_ms ~= nil and { [state.rows] = opts.elapsed_ms } or {},
+      { __mode = "k" }),
     write_mode = (opts and opts.write == true) and true or false,
     pinned = false,
     query_spec = opts and opts.query_spec or nil,
