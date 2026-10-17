@@ -605,13 +605,15 @@ function M.open(url, opts)
   for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
     if not welcome_win and vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(winid)) == "grip://welcome" then
       welcome_win = winid
-      welcome_view = vim.api.nvim_win_call(winid, vim.fn.winsaveview)
     end
     if vim.api.nvim_win_get_buf(winid) == bufnr then
       pad_win = winid
       break
     end
   end
+
+  require("dadbod-grip.zoom").restore_for(pad_win)
+  if welcome_win then welcome_view = vim.api.nvim_win_call(welcome_win, vim.fn.winsaveview) end
 
   if not pad_win then
     -- When schema sidebar is open, open in the right-side area (not full-width bottom)

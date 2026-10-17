@@ -9,7 +9,8 @@ for _, scenario in ipairs({ "grid", "query", "sidebar", "welcome", "external", "
   "stats", "columns", "fk", "indexes", "constraints", "cell-split", "profile", "diff",
   "float-er", "float-cell", "float-json", "float-info", "float-picker", "float-explain",
   "external-split", "closed-target", "closed-other", "rearranged", "focus", "other-scroll", "help-split",
-  "help", "tabs", "single", "child-exit" }) do
+  "help", "tabs", "single", "child-exit", "query-nav-2", "query-nav-q", "query-nav-command",
+  "query-reopen", "query-new-window", "query-other-copy" }) do
   local child = vim.fn.jobstart({ vim.g.grip_test_progpath, "--clean", "--embed", "--headless",
     "-i", "NONE", "-n", "-u", "tests/minimal_init.lua" }, { rpc = true })
   local active = true
