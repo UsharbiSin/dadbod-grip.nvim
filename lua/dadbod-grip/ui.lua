@@ -479,6 +479,7 @@ function M.blocking(msg, fn)
 
   local frames = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
   local fi = 1
+  local show_running_time = require("dadbod-grip").get_opts().show_running_time
 
   local w = math.max(1, math.min(vim.fn.strdisplaywidth(msg) + 2 + FLOAT_PADDING + TIMER_WIDTH,
     vim.o.columns - SCREEN_MARGIN))
@@ -542,7 +543,7 @@ function M.blocking(msg, fn)
     end
     fi = (fi % #frames) + 1
     local elapsed_ms = math.floor((vim.uv.hrtime() - t0) / 1e6)
-    local suffix = (elapsed_ms >= M._timer_threshold_ms)
+    local suffix = (show_running_time and elapsed_ms >= M._timer_threshold_ms)
       and (" " .. M.format_elapsed(elapsed_ms)) or ""
     -- A nested step can have a longer label; resize only when it needs room or
     -- the editor has shrunk, never once per timer tick.
