@@ -615,9 +615,8 @@ test("report_split: height follows content and requests no more than 30", functi
 end)
 
 -- ── live elapsed timer ──────────────────────────────────────────
--- A slow query used to look identical to a hung one: the braille spinner turns
--- at the same rate either way, and the only number arrived after the grid had
--- already rendered. The float now counts up while the work runs.
+-- The float counts wall time while the work runs; it does not measure query
+-- progress or distinguish a slow operation from a hung one.
 
 test("format_elapsed: seconds under a minute, m/s past it", function()
   eq(ui.format_elapsed(0), "0.0s", "zero")

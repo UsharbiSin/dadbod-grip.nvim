@@ -9,12 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The loading float now counts up while it waits. Past half a second every blocking operation --
-  query, grid refresh, sort/filter/paginate, staged mutation, export, AI request, workspace
-  preload -- appends live elapsed time to its label (`querying users... 3.4s`, `1m12s` past a
-  minute), so a slow query is distinguishable from a hung one while it runs instead of only after
-  the grid renders. Nested steps relabel the float but keep the outer clock, so the number always
-  answers how long the whole operation has been going.
+- The loading float shows live elapsed time after half a second (`3.4s`,
+  `1m12s` past a minute). Nested steps keep the outer operation's clock, and
+  long labels shorten to keep the time visible. The timer stops when the
+  operation finishes, fails, or its float closes.
 
 ## [3.15.0] - 2026-10-17
 

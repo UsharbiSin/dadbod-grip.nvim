@@ -141,18 +141,20 @@ extension or read a remote URL gets a 60-second minimum for that network step.
 Health pings use 5 seconds.
 
                                                         *grip-query-timer*
-While a query, refresh, mutation, export, or AI request runs, grip shows a
-centered loading float. Once the work passes half a second the float starts
-counting up next to its label, so a slow query is visibly slow while you wait
-rather than only once the grid appears: >
+Operations wrapped in grip's loading float, such as opening a table or
+generating SQL, show a centered indicator. Once the work passes half a
+second the float starts counting up next to its label, so the wait is
+visible before the grid appears: >
     querying users... 3.4s
     generating SQL... 1m12s
 <
-The reading is wall time for the whole operation and is not configurable. It
-climbs no higher than `timeout` on a database call, which is how a hung
-connection is told apart from a query that is merely expensive. The grid
-status line still reports the round-trip on its own afterwards ("3401ms
-query"), and |grip-history| keeps that number per query.
+The reading is wall time for the whole operation, including nested steps,
+and is not configurable. It resets for the next operation. Long labels are
+shortened to keep the elapsed time visible. The counter measures waiting;
+it does not report database progress or identify a hung query. CLI timeouts
+apply separately to each call, so a multi-step operation may take longer.
+The grid status line still reports the query round-trip afterwards
+("3401ms query"), and |grip-history| keeps that number per query.
 
 Set `open_sidebar = false` to connect directly into the main workspace. The
 sidebar remains available through :GripSchema, `gb`, or `1`.
