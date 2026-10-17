@@ -220,22 +220,7 @@ e2e-visual: seed-sqlite
     snapshot "GripImport committed rows"
     tmux send-keys -t "$session" :qa! Enter
 
-    for _ in {1..100}; do
-      [[ "$(tmux display-message -p -t "$session" '#{pane_dead}')" == 1 ]] && break
-      sleep 0.05
-    done
-    if [[ "$(tmux display-message -p -t "$session" '#{pane_dead}')" != 1 ]]; then
-      echo "e2e-visual Neovim process did not exit" >&2
-      tmux capture-pane -p -t "$session" >&2
-      exit 1
-    fi
-
-    status="$(tmux display-message -p -t "$session" '#{pane_dead_status}')"
-    if [[ "$status" != 0 ]]; then
-      echo "e2e-visual failed with status $status" >&2
-      tmux capture-pane -p -t "$session" >&2
-      exit "$status"
-    fi
+    bash tests/fixtures/wait_for_tmux_exit.sh "$session"
     echo "e2e-visual: layout and staged import passed at 100, 80, and 160 columns"
 
 # Open Neovim connected to DuckDB for httpfs testing
