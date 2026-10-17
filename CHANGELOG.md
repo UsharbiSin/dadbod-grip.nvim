@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in Zen display with `show_hints = false` and the session-wide `:GripZen`
+  toggle. Automatic grid, SQL pad, sidebar, and welcome shortcuts can be hidden
+  independently of timing and pane layout. Essential result status and explicit
+  help remain available; new SQL pads display help outside the SQL text.
 - Independent `show_running_time` and `show_result_time` options (both true by
   default) hide the loading counter or retained result durations. Loading
   animation, completed action status, and history measurement remain available.

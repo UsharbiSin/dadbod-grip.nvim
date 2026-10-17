@@ -11,6 +11,26 @@ local _pad_bufnr = nil
 -- or authored (keep it, append below). nil = no auto-sync to reclaim.
 local _last_synced = nil
 
+-- Help belongs to the UI, never the SQL or its undo history. Resolve bindings
+-- when refreshed so disabled/custom keys stay truthful after GripZen.
+local hint_ns = vim.api.nvim_create_namespace("grip_pad_hints")
+function M.refresh_hints()
+  local buf = _pad_bufnr
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
+  vim.api.nvim_buf_clear_namespace(buf, hint_ns, 0, -1)
+  if not require("dadbod-grip").get_opts().show_hints then return end
+  local km, hints = require("dadbod-grip.keymaps"), {}
+  local run = km.get("qpad_execute")
+  hints[1] = {{"Grip keys: " .. (run and (run .. " runs this SQL block.")
+    or ":Grip SELECT 1 runs a query."), "Comment"}}
+  local navigation = {}
+  for _, item in ipairs({{"table_picker_go", "tables"}, {"schema_browser", "schema"}, {"help", "help"}}) do
+    if km.get(item[1]) then navigation[#navigation + 1] = km.get(item[1]) .. " " .. item[2] end
+  end
+  if #navigation > 0 then hints[#hints + 1] = {{"Grip keys: " .. table.concat(navigation, " | "), "Comment"}} end
+  vim.api.nvim_buf_set_extmark(buf, hint_ns, vim.api.nvim_buf_line_count(buf) - 1, 0, {virt_lines = hints})
+end
+
 --- Return true when `lines` contains real SQL content.
 --- Strips owned hint comments (legacy C-CR or Grip keys) and the AI separator
 --- before deciding. Blank/whitespace-only remaining lines = no real content.
@@ -136,19 +156,18 @@ local function ensure_buf(url)
     if u and u ~= "" then pcall(require("dadbod-grip.completion").get_schema, u) end
   end)
 
-  local km = require("dadbod-grip.keymaps")
-  local run = km.get("qpad_execute")
-  local hints = { run and ("-- Grip keys: " .. run .. " runs this SQL block.")
-    or "-- Grip keys: :Grip SELECT 1 runs a query." }
-  local navigation = {}
-  for _, item in ipairs({ { "table_picker_go", "tables" }, { "schema_browser", "schema" }, { "help", "help" } }) do
-    if km.get(item[1]) then navigation[#navigation + 1] = km.get(item[1]) .. " " .. item[2] end
-  end
-  if #navigation > 0 then hints[#hints + 1] = "-- Grip keys: " .. table.concat(navigation, " | ") end
-  hints[#hints + 1] = ""
-  vim.api.nvim_buf_set_lines(_pad_bufnr, 0, -1, false, hints)
   -- Mark buffer as not modified after creation
   vim.bo[_pad_bufnr].modified = false
+
+  local hints_pending = false
+  vim.api.nvim_buf_attach(_pad_bufnr, false, {
+    on_lines = function()
+      if hints_pending then return end
+      hints_pending = true
+      -- Undo/redo finish moving extmarks after on_lines; anchor after that work.
+      vim.schedule(function() hints_pending = false; M.refresh_hints() end)
+    end,
+  })
 
   -- BufWriteCmd: save query with :GripSave
   vim.api.nvim_create_autocmd("BufWriteCmd", {
@@ -699,6 +718,7 @@ function M.open(url, opts)
       vim.bo[bufnr].modified = false
     end
   end
+  M.refresh_hints()
 end
 
 --- Append or replace SQL text in the query pad buffer.

@@ -46,6 +46,7 @@ local OPTS = {
   -- visible when a long table scrolls past it. Costs one screen line.
   sticky_header = true,
   open_sidebar = true,
+  show_hints = true,
   show_running_time = true,
   show_result_time = true,
 }
@@ -1829,6 +1830,7 @@ end
 ---@field open_sidebar? boolean  Open the schema sidebar on connection (default: true)
 ---@field show_running_time? boolean Show elapsed time in the loading float (default: true)
 ---@field show_result_time? boolean Show retained query/action durations (default: true)
+---@field show_hints? boolean Show automatic shortcut help (default: true)
 
 ---Setup dadbod-grip with user options.
 ---@param opts? DadbodGripOpts
@@ -1857,6 +1859,7 @@ function M.setup(opts)
     open_sidebar  = { opts.open_sidebar,  "boolean", true },
     show_running_time = { opts.show_running_time, "boolean", true },
     show_result_time  = { opts.show_result_time,  "boolean", true },
+    show_hints        = { opts.show_hints,        "boolean", true },
   })
   OPTS.limit        = opts.limit        or 100
   OPTS.max_col_width = opts.max_col_width or 40
@@ -1872,6 +1875,7 @@ function M.setup(opts)
   OPTS.open_sidebar = opts.open_sidebar ~= false
   if opts.show_running_time ~= nil then OPTS.show_running_time = opts.show_running_time end
   if opts.show_result_time ~= nil then OPTS.show_result_time = opts.show_result_time end
+  if opts.show_hints ~= nil then OPTS.show_hints = opts.show_hints end
 
   -- Keymap overrides: stored at module level for keymaps.get() to read.
   if opts.keymaps then
@@ -2430,6 +2434,30 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("GripZoom", function()
     require("dadbod-grip.zoom").toggle()
   end, { desc = "Zoom current pane or restore its split layout" })
+
+  vim.api.nvim_create_user_command("GripZen", function()
+    local windows = {}
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      windows[win] = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+    end
+    OPTS.show_hints = not OPTS.show_hints
+    for buf, session in pairs(view._sessions) do
+      if vim.api.nvim_buf_is_valid(buf) then view.render(buf, session.state) end
+    end
+    require("dadbod-grip.query_pad").refresh_hints()
+    require("dadbod-grip.schema").redraw()
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(buf) and vim.api.nvim_buf_get_name(buf) == "grip://welcome" then
+        require("dadbod-grip.welcome").render(buf)
+      end
+    end
+    for win, saved in pairs(windows) do
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_call(win, function() vim.fn.winrestview(saved) end)
+      end
+    end
+    vim.cmd("redraw")
+  end, { desc = "Toggle automatic Grip shortcut hints for this session" })
 
   -- :GripToggle: close all grip windows if visible, reopen if hidden
   vim.api.nvim_create_user_command("GripToggle", function()

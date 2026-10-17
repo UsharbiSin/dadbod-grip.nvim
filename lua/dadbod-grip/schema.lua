@@ -284,9 +284,21 @@ local function render(state, anchor)
   if #nodes == 0 and state.items then
     line(state.filter and " (no matches)" or " (no objects found)", "GripReadonly")
   end
-  line("")
-  line(" 1:conn 2:pad 3:grid", "GripReadonly")
-  line(" <CR> / F ?  zh/zl", "GripReadonly")
+  if require("dadbod-grip").get_opts().show_hints then
+    local km = require("dadbod-grip.keymaps")
+    local function hints(items, native)
+      local parts = {}
+      for _, item in ipairs(items) do
+        local key = km.get(item[1])
+        if key then parts[#parts + 1] = key .. (item[2] or "") end
+      end
+      if native then parts[#parts + 1] = native end
+      if #parts > 0 then line(" " .. table.concat(parts, " "), "GripReadonly") end
+    end
+    line("")
+    hints({{"tab_1", ":conn"}, {"tab_2", ":pad"}, {"tab_3", ":grid"}})
+    hints({{"sidebar_open"}, {"sidebar_filter"}, {"sidebar_filter_c"}, {"help"}}, "zh/zl")
+  end
   vim.bo[_sidebar_bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(_sidebar_bufnr, 0, -1, false, lines)
   vim.bo[_sidebar_bufnr].modifiable = false
@@ -874,6 +886,7 @@ function M.toggle(url)
     vim.api.nvim_buf_set_name(_sidebar_bufnr, "grip://schema")
   end
   -- The buffer is reused across connections; callbacks must bind the current URL.
+  vim.b[_sidebar_bufnr].db = url
   setup_keymaps(url)
 
   -- Open left split, restoring previous width if available
@@ -914,6 +927,13 @@ function M.get_winid()
     return _sidebar_winid
   end
   return nil
+end
+
+--- Repaint cached sidebar content without fetching or changing selection.
+function M.redraw()
+  if not _sidebar_winid or not vim.api.nvim_win_is_valid(_sidebar_winid) then return end
+  local url = vim.b[_sidebar_bufnr].db
+  if url and _states[url] then render(_states[url]) end
 end
 
 --- Get first non-sidebar window (the right content area).
