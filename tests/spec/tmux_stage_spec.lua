@@ -4,6 +4,7 @@ for _, case in ipairs({
   { "no-prompt", 0, 0 },
   { "old-prompt-in-grid", 0, 0 },
   { "complete-with-prompt", 0, 1 },
+  { "stage-during-capture", 0, 1 },
   { "late-prompt", 0, 1 },
   { "sticky-prompt", 0, 1 },
   { "failed-stage", 7, 0 },
@@ -35,6 +36,7 @@ for _, case in ipairs({
       if call == "stage-complete" then complete = true end
     end
     assert(enters == case[3], "incorrect prompt acknowledgement count: " .. enters)
+    assert(vim.fn.filereadable(root .. "/current-prompt") == 0, "completed stage left a current hit-enter prompt open")
     assert(waits == 1 or (case[1] == "capture-error" and waits == 0), "stage signal was not consumed exactly once")
     assert((result.code == 0) == complete, "prompt/timeout was mistaken for actual stage completion")
     if vim.fn.filereadable(root .. "/waiter") == 1 then

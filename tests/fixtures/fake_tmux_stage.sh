@@ -11,6 +11,10 @@ case "$1" in
     case "$scenario" in
       no-prompt|old-prompt-in-grid) sleep 0.03 ;;
       complete-with-prompt) ;;
+      stage-during-capture)
+        while [[ ! -f "$root/grid-captured" ]]; do sleep 0.005; done
+        touch "$root/current-prompt"
+        ;;
       failed-stage) exit 7 ;;
       never-stage|prompt-without-stage|capture-error) exec sleep 30 ;;
       *)
@@ -27,9 +31,19 @@ case "$1" in
     if [[ -f "$root/captures" ]]; then count="$(cat "$root/captures")"; fi
     count=$((count + 1))
     printf '%s\n' "$count" > "$root/captures"
+    if [[ "$scenario" == "stage-during-capture" && ! -f "$root/grid-captured" ]]; then
+      # The captured grid predates the prompt/stage, but returns afterwards.
+      touch "$root/grid-captured"
+      while [[ ! -f "$root/current-prompt" ]]; do sleep 0.005; done
+      sleep 0.04
+      printf 'capture:result-before-stage\n' >> "$root/calls"
+      printf '17 rows  Write: 4ms client  Query: 2ms client\n'
+      exit 0
+    fi
     case "$scenario" in
       no-prompt|old-prompt-in-grid|never-stage|failed-stage) prompt=false ;;
       late-prompt) [[ "$count" -lt 2 ]] && prompt=false || prompt=true ;;
+      stage-during-capture) [[ -f "$root/current-prompt" ]] && prompt=true || prompt=false ;;
       *) prompt=true ;;
     esac
     if [[ "$prompt" == true ]]; then
@@ -45,6 +59,10 @@ case "$1" in
     ;;
   send-keys)
     [[ "$*" == "send-keys -t fixture-session Enter" ]]
+    if [[ "$scenario" == "stage-during-capture" ]]; then
+      [[ -f "$root/current-prompt" ]]
+      rm "$root/current-prompt"
+    fi
     printf 'send:Enter\n' >> "$root/calls"
     touch "$root/entered"
     ;;
