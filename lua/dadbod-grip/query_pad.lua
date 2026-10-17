@@ -12,13 +12,14 @@ local _pad_bufnr = nil
 local _last_synced = nil
 
 --- Return true when `lines` contains real SQL content.
---- Strips the hint comment (-- C-CR:...) and AI separator (-- AI generated:)
+--- Strips owned hint comments (legacy C-CR or Grip keys) and the AI separator
 --- before deciding. Blank/whitespace-only remaining lines = no real content.
 --- This is the single canonical check used by sync_query, M.open, and append_sql.
 local function _has_real_content(lines)
   local real = {}
   for _, line in ipairs(lines) do
-    if not line:match("^%-%- C%-CR:") and not line:match("^%-%- AI generated:") then
+    if not line:match("^%-%- C%-CR:") and not line:match("^%-%- Grip keys:")
+        and not line:match("^%-%- AI generated:") then
       table.insert(real, line)
     end
   end
@@ -135,11 +136,17 @@ local function ensure_buf(url)
     if u and u ~= "" then pcall(require("dadbod-grip.completion").get_schema, u) end
   end)
 
-  -- Pre-fill with hint comment
-  vim.api.nvim_buf_set_lines(_pad_bufnr, 0, -1, false, {
-    "-- C-CR:run block or buffer  gn:notebooks  gA:ai  go:tables  gh:hist  gq:saved  gb:schema  gC:conn",
-    "",
-  })
+  local km = require("dadbod-grip.keymaps")
+  local run = km.get("qpad_execute")
+  local hints = { run and ("-- Grip keys: " .. run .. " runs this SQL block.")
+    or "-- Grip keys: :Grip SELECT 1 runs a query." }
+  local navigation = {}
+  for _, item in ipairs({ { "table_picker_go", "tables" }, { "schema_browser", "schema" }, { "help", "help" } }) do
+    if km.get(item[1]) then navigation[#navigation + 1] = km.get(item[1]) .. " " .. item[2] end
+  end
+  if #navigation > 0 then hints[#hints + 1] = "-- Grip keys: " .. table.concat(navigation, " | ") end
+  hints[#hints + 1] = ""
+  vim.api.nvim_buf_set_lines(_pad_bufnr, 0, -1, false, hints)
   -- Mark buffer as not modified after creation
   vim.bo[_pad_bufnr].modified = false
 
@@ -265,6 +272,7 @@ M._block_under_cursor = _block_under_cursor  -- exported for unit tests
 local function _is_stmt_boundary(l)
   return l:match("^%s*$") ~= nil
     or l:match("^%-%- C%-CR:") ~= nil
+    or l:match("^%-%- Grip keys:") ~= nil
     or l:match("^%-%- AI generated:") ~= nil
 end
 
@@ -605,13 +613,15 @@ function M.open(url, opts)
   for _, winid in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
     if not welcome_win and vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(winid)) == "grip://welcome" then
       welcome_win = winid
-      welcome_view = vim.api.nvim_win_call(winid, vim.fn.winsaveview)
     end
     if vim.api.nvim_win_get_buf(winid) == bufnr then
       pad_win = winid
       break
     end
   end
+
+  require("dadbod-grip.zoom").restore_for(pad_win)
+  if welcome_win then welcome_view = vim.api.nvim_win_call(welcome_win, vim.fn.winsaveview) end
 
   if not pad_win then
     -- When schema sidebar is open, open in the right-side area (not full-width bottom)
@@ -800,7 +810,8 @@ function M.get_content()
   -- Filter out hint comment and AI separator lines, keep real SQL
   local real = {}
   for _, line in ipairs(lines) do
-    if not line:match("^%-%- C%-CR:") and not line:match("^%-%- AI generated:") then
+    if not line:match("^%-%- C%-CR:") and not line:match("^%-%- Grip keys:")
+        and not line:match("^%-%- AI generated:") then
       table.insert(real, line)
     end
   end

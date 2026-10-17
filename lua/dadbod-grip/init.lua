@@ -1599,139 +1599,26 @@ function M.open_welcome()
     vim.api.nvim_buf_set_name(welcome_buf, "grip://welcome")
   end
 
-  local ver = "v" .. require("dadbod-grip.version")
-  -- Compact header matching help popup (help guy)
-  local logo = {
-    "",
-    "  ╔═╦═╦═╗",
-    "  ║d║b║g║  dadbod-grip " .. ver,
-    "  ╚═╩═╩═╝",
-    "  Editable database grids, inside Neovim.",
-    "",
-    "  ── Start ───────────────────────────────────────",
-    "  :GripStart    demo database + notebook",
-    "  :GripConnect  connect a database",
-    "  ?             full keymap reference",
-    "",
-    "  ── Navigate: 1 · 2 · 3 ─────────────────────────",
-    "  1   schema sidebar           2   query pad",
-    "  3   table / records          Q   this screen",
-    "  4   ER diagram               5-9 stats/cols/fk/idx",
-    string.format("  %-10s zoom pane / restore layout", require("dadbod-grip.keymaps").get("zoom") or ":GripZoom"),
-    "",
-    "  ── Query pad ───────────────────────────────────",
-    "  q       open pad             <C-CR>  run SQL block",
-    "  gn      notebook picker      gA      AI generation",
-    "  gh      query history        gq      load saved",
-    "  <C-s>   save query",
-    "",
-    "  ── Grid: edit ──────────────────────────────────",
-    "  i/<CR>  edit cell            x     set null",
-    "  o       insert row           d     delete row",
-    "  a       apply changes        u     undo",
-    "  gf      FK drill-down        s/S   sort / stack sort",
-    "  gF      filter builder       f     quick filter",
-    "  violet = modified · green = inserted · red = deleted",
-    "",
-    "  ── Analysis ────────────────────────────────────",
-    "  gR  column distributions     gS  column stats",
-    "  gD  diff tables              gE  export clipboard",
-    "  gX  export to file           A   AI SQL (grid)",
-    "",
-    "  ── Files ───────────────────────────────────────",
-    "  /path/to/file.csv   .parquet   .json   .xlsx",
-    "  https://host/data.parquet      (remote via httpfs)",
-    "  :Grip file.csv --write    edit + write back  (g!)",
-    "  :Grip file.csv --watch    auto-refresh on timer",
-    "",
-    "  ── Connect ─────────────────────────────────────",
-    "  postgresql://user:pass@host:5432/dbname",
-    "  mysql://user:pass@host:3306/dbname",
-    "  sqlite:path/to/file.db",
-    "  duckdb:path/to/file.duckdb   duckdb::memory:",
-    "",
-    "  ────────────────────────────────────────────────",
-    "",
-  }
-
-  vim.bo[welcome_buf].modifiable = true
-  vim.api.nvim_buf_set_lines(welcome_buf, 0, -1, false, logo)
-  vim.bo[welcome_buf].modifiable = false
-  vim.bo[welcome_buf].buftype    = "nofile"
-  vim.bo[welcome_buf].modified   = false
-  vim.bo[welcome_buf].filetype   = "grip-welcome"
-
-  -- Syntax highlights for welcome screen: deferred so they survive FileType autocmds
-  local ns_w = vim.api.nvim_create_namespace("grip_welcome")
-  vim.api.nvim_buf_clear_namespace(welcome_buf, ns_w, 0, -1)
-  vim.schedule(function()
-    if not vim.api.nvim_buf_is_valid(welcome_buf) then return end
-    -- Byte-range highlight helper; matches the defaults of the (deprecated)
-    -- add_highlight it replaces: priority 4096, no hl_eol.
-    local function hl_range(row, group, col, end_col)
-      vim.api.nvim_buf_set_extmark(welcome_buf, ns_w, row, col, {
-        end_col = end_col, hl_group = group,
-      })
-    end
-    for i, line in ipairs(logo) do
-      local ln  = i - 1
-      local len = #line
-      if line:sub(3, 8) == "──" then
-        -- Section headers and bottom separator
-        hl_range(ln, "Comment", 0, len)
-      elseif line:sub(3, 5) == "╔" or line:sub(3, 5) == "║" or line:sub(3, 5) == "╚" then
-        -- Logo box lines (╔ ║ ╚)
-        hl_range(ln, "Special", 0, len)
-        local vs = line:find("dadbod-grip", 1, true)
-        if vs then hl_range(ln, "Title", vs - 1, len) end
-      elseif line:find("Editable database", 1, true) then
-        hl_range(ln, "Comment", 0, len)
-      elseif line:find("= modified", 1, true) then
-        -- Color legend: extmark with high priority so it shows above any syntax highlighting
-        local function hl_phrase(phrase, hl)
-          local s, e = line:find(phrase, 1, true)
-          if s then
-            vim.api.nvim_buf_set_extmark(welcome_buf, ns_w, ln, s - 1, {
-              end_col = e, hl_group = hl, priority = 200,
-            })
-          end
-        end
-        hl_phrase("violet = modified", "GripModified")
-        hl_phrase("green = inserted",  "GripInserted")
-        hl_phrase("red = deleted",     "GripDeleted")
-      elseif line:sub(3, 7) == ":Grip" then
-        -- :Grip command examples
-        local s, e = line:find(":Grip%S*")
-        if s then hl_range(ln, "Statement", s - 1, e) end
-        s, e = line:find("%-%-%S+")
-        if s then hl_range(ln, "Identifier", s - 1, e) end
-      elseif line:sub(1, 2) == "  " and line:sub(3, 3) ~= " " and line:sub(3, 3) ~= "" then
-        -- Keymap lines: highlight left key and right key (two-column layout)
-        local _, after = line:match("^  (%S+)()")
-        if after then
-          hl_range(ln, "Identifier", 2, after - 1)
-        end
-        -- Right-column key: consistently at byte 31 (0-indexed). Guard: line must be long
-        -- enough and that position must be non-space (single-column lines are too short).
-        if #line >= 34 and line:sub(32, 32) ~= " " then
-          local rs, re = line:find("%S+", 32)
-          if rs then
-            hl_range(ln, "Identifier", rs - 1, re)
-          end
-        end
-      end
-      -- ·NULL· token: highlight wherever it appears, regardless of which branch fired above
-      local ns, ne = line:find("·NULL·", 1, true)
-      if ns then hl_range(ln, "GripNullStaged", ns - 1, ne) end
-    end
-  end)
-
-  -- Display in current window
+  vim.bo[welcome_buf].buftype = "nofile"
+  vim.bo[welcome_buf].filetype = "grip-welcome"
+  vim.bo[welcome_buf].swapfile = false
   vim.api.nvim_win_set_buf(0, welcome_buf)
+  local km = require("dadbod-grip.keymaps")
+  local rows = require("dadbod-grip.welcome").render(welcome_buf)
+  local first
+  for row in pairs(rows) do first = math.min(first or row, row) end
+  vim.wo.wrap = false
+  vim.wo.number = false
+  vim.wo.relativenumber = false
+  vim.wo.signcolumn = "no"
+  vim.wo.foldcolumn = "0"
+  vim.wo.cursorline = true
+  vim.api.nvim_win_set_cursor(0, { first, 2 })
+  vim.fn.winrestview({ topline = 1, leftcol = 0 })
 
   -- Keymaps
-  local function wmap(key, fn, desc)
-    vim.keymap.set("n", key, fn, { buffer = welcome_buf, silent = true, nowait = true, desc = desc })
+  local function wmap(action, fn, desc)
+    km.bind("welcome", welcome_buf, action, "n", fn, { nowait = true, desc = desc })
   end
   require("dadbod-grip.keymaps").bind("welcome", welcome_buf, "zoom", "n", function()
     require("dadbod-grip.zoom").toggle()
@@ -1744,21 +1631,21 @@ function M.open_welcome()
     if type(c) ~= "string" or c == "" then c = os.getenv("DATABASE_URL") end
     return (c and c ~= "") and c or nil
   end
-  wmap("q",     function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
-  wmap("<Esc>", function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
-  wmap("gc",    do_connect, "Connect to database")
-  wmap("gC",    do_connect, "Connect to database")
-  wmap("<C-g>", do_connect, "Connect to database")
-  wmap("<CR>",  do_connect, "Connect to database")
-  wmap("go",    function()
+  wmap("welcome_close",     function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
+  wmap("welcome_close_esc", function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
+  wmap("welcome_connect",    do_connect, "Connect to database")
+  wmap("connections",    do_connect, "Connect to database")
+  wmap("connections_alt", do_connect, "Connect to database")
+  local function do_tables()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.picker").pick_table(conn, function(t) M.open(t, conn) end)
-  end, "Open table picker")
-  wmap("gb",    function()
+  end
+  wmap("table_picker_go", do_tables, "Open table picker")
+  wmap("schema_browser",    function()
     require("dadbod-grip.schema").toggle(cur_conn())
   end, "Schema browser")
-  wmap("gG", function()
+  wmap("er_diagram", function()
     local conn = cur_conn()
     if not conn then
       vim.notify("ER Diagram: no database connection", vim.log.levels.WARN)
@@ -1766,8 +1653,8 @@ function M.open_welcome()
     end
     require("dadbod-grip.er_diagram").toggle(conn)
   end, "ER diagram")
-  wmap("?",     function() view.show_help() end, "Full keymap help")
-  wmap("A",     function()
+  wmap("help",     function() view.show_help() end, "Full keymap help")
+  wmap("ai",     function()
     local ai = require("dadbod-grip.ai")
     if not ai.is_enabled() then
       vim.notify("AI is disabled. Enable it in setup({ ai = { ... } })", vim.log.levels.INFO)
@@ -1777,25 +1664,26 @@ function M.open_welcome()
   end, "AI SQL assistant")
 
   -- 1-9: surface navigation from welcome screen
-  wmap("1", function()
+  wmap("tab_1", function()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.schema").toggle(conn)
   end, "Schema sidebar")
-  wmap("2", function()
+  local function do_query()
     local conn = cur_conn()
     if conn then
       require("dadbod-grip.query_pad").open(conn)
     else
       do_connect()
     end
-  end, "Query pad")
-  wmap("3", function()
+  end
+  wmap("tab_2", do_query, "Query pad")
+  wmap("tab_3", function()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.picker").pick_table(conn, function(t) M.open(t, conn) end)
   end, "Table picker")
-  wmap("4", function()
+  wmap("tab_4", function()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.er_diagram").toggle(conn)
@@ -1804,15 +1692,40 @@ function M.open_welcome()
   -- is a float, not a grid view, so it is wired separately above.
   for n = 5, 9 do
     local vname = require("dadbod-grip.keymaps").TAB_VIEWS[n]
-    wmap(tostring(n), function()
+    wmap("tab_" .. n, function()
       local conn = cur_conn()
       if not conn then do_connect(); return end
       require("dadbod-grip.picker").pick_table(conn, function(t) M.open(t, conn, { view = vname }) end)
     end, vname .. " view")
   end
 
+  local actions = {
+    demo = function() vim.cmd("GripStart") end,
+    connect = do_connect,
+    tables = do_tables,
+    query = do_query,
+  }
+  wmap("welcome_activate", function()
+    local action = actions[rows[vim.api.nvim_win_get_cursor(0)[1]]]
+    if action then action() end
+  end, "Run welcome action")
+  local function move_action(direction)
+    local ordered = {}
+    for row in pairs(rows) do ordered[#ordered + 1] = row end
+    table.sort(ordered)
+    local current = vim.api.nvim_win_get_cursor(0)[1]
+    local target = direction > 0 and ordered[1] or ordered[#ordered]
+    for _, row in ipairs(ordered) do
+      if direction > 0 and row > current then target = row; break end
+      if direction < 0 and row < current then target = row end
+    end
+    vim.api.nvim_win_set_cursor(0, { target, 2 })
+  end
+  wmap("welcome_next", function() move_action(1) end, "Next welcome action")
+  wmap("welcome_prev", function() move_action(-1) end, "Previous welcome action")
+
   -- Dev secret: Chonk at the center of the grip vortex
-  wmap(";", function()
+  wmap("welcome_secret", function()
     local secret = {
       "",
       "∿ ∿  dadbod-grip vortex  ∿ ∿",
@@ -2462,30 +2375,33 @@ function M.setup(opts)
       return
     end
     local connections = require("dadbod-grip.connections")
-    connections.switch(demo.url, demo_module.label)
+    connections.switch(demo.url, demo_module.label, nil, { on_ready = function()
+      local md_files = vim.api.nvim_get_runtime_file("demo/softrear-internal.md", false)
+      if #md_files == 0 then return end
+      local qpad = require("dadbod-grip.query_pad")
+      qpad.open(demo.url)
+      local pad = qpad.get_pad_bufnr()
+      if not pad or not vim.api.nvim_buf_is_valid(pad) then return end
+      local lines = vim.fn.readfile(md_files[1])
+      vim.bo[pad].modifiable = true
+      vim.api.nvim_buf_set_lines(pad, 0, -1, false, lines)
+      vim.bo[pad].modified = false
+      for i, line in ipairs(lines) do
+        if line == "```sql" then
+          vim.api.nvim_win_set_cursor(0, { i + 1, 0 })
+          vim.cmd("normal! zt")
+          break
+        end
+      end
+      local run_key = require("dadbod-grip.keymaps").get("qpad_execute")
+      vim.notify(run_key and ("Demo ready: " .. run_key .. " runs this SQL block.")
+        or "Demo ready. Use :GripQuery to edit SQL.", vim.log.levels.INFO)
+    end })
     local attached
     attached, err = demo_module.attach_supplier(demo)
     if not attached then vim.notify("Grip: " .. err, vim.log.levels.WARN) end
     if demo.supplier_error then vim.notify("Grip: " .. demo.supplier_error, vim.log.levels.WARN) end
 
-    -- Load the demo notebook into the query pad.
-    -- Double-schedule: connections.switch opens the pad in its own vim.schedule;
-    -- we need to run after that has completed.
-    vim.schedule(function()
-      vim.schedule(function()
-        local md_files = vim.api.nvim_get_runtime_file("demo/softrear-internal.md", false)
-        if #md_files == 0 then return end
-        local qpad = require("dadbod-grip.query_pad")
-        qpad.open(demo.url)  -- idempotent: ensures _pad_bufnr exists regardless of timing
-        local pad = qpad.get_pad_bufnr()
-        if not pad or not vim.api.nvim_buf_is_valid(pad) then return end
-        local lines = vim.fn.readfile(md_files[1])
-        vim.bo[pad].modifiable = true
-        vim.api.nvim_buf_set_lines(pad, 0, -1, false, lines)
-        vim.bo[pad].modified = false
-        vim.notify("Softrear Inc. Analyst Portal\xe2\x84\xa2  \xc2\xb7  C-CR runs any SQL block", vim.log.levels.INFO)
-      end)
-    end)
   end, { desc = "Open the Softrear Inc. Analyst Portal" })
 
   -- :GripHome: return to the welcome screen from anywhere
