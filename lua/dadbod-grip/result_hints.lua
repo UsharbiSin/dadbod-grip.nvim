@@ -49,20 +49,21 @@ end
 
 -- DuckDB's whole-query LATENCY, in seconds in its JSON profile. This is
 -- distinct from the external client clock and from cumulative operator CPU.
-function M.engine_time(info, width)
+function M.engine_time(info, width, kind)
   local ui = require("dadbod-grip.ui")
+  kind = kind or "Engine"
   local label, short
   if info.status == "available" then
     local ms = info.elapsed_ms
     local duration = ms < 1 and string.format("%.3gms", ms)
       or ms < 1000 and (string.format("%.1f", ms):gsub("%.0$", "") .. "ms") or ui.format_elapsed(ms)
-    short = "Engine: " .. duration
+    short = kind .. ": " .. duration
     label = short .. " DuckDB profiler latency"
   else
-    short = "Engine: " .. info.status
+    short = kind .. ": " .. info.status
     label = short .. (info.adapter and (" (" .. info.adapter .. ")") or "")
   end
-  for _, text in ipairs({ " " .. label, " " .. short, " Engine: n/a" }) do
+  for _, text in ipairs({ " " .. label, " " .. short, " " .. kind .. ": n/a" }) do
     if vim.fn.strdisplaywidth(text) <= width then return text end
   end
   return ui.truncate_display(" " .. short, width)
@@ -143,6 +144,13 @@ function M.attach(sessions)
       if render.engine_time_row then
         local text = require("dadbod-grip.ui").pad_display(M.engine_time(render.engine_timing, width), width, false)
         vim.api.nvim_buf_set_extmark(buf, ns, render.engine_time_row, 0, {
+          virt_text = { { text, "GripStatusOk" } }, virt_text_win_col = 0,
+          virt_text_pos = "overlay", ephemeral = true,
+        })
+      end
+      if render.write_engine_time_row then
+        local text = require("dadbod-grip.ui").pad_display(M.engine_time(render.write_engine_timing, width, "Write engine"), width, false)
+        vim.api.nvim_buf_set_extmark(buf, ns, render.write_engine_time_row, 0, {
           virt_text = { { text, "GripStatusOk" } }, virt_text_win_col = 0,
           virt_text_pos = "overlay", ephemeral = true,
         })

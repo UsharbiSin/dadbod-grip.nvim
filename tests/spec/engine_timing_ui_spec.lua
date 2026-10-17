@@ -80,7 +80,7 @@ test("public SELECT and refresh opt in; count and metadata stay unprofiled", fun
   if not ok then error(err, 0) end
 end)
 
-for _, scenario in ipairs({ "wide", "narrow", "shared", "scroll" }) do
+for _, scenario in ipairs({ "wide", "narrow", "shared", "scroll", "zen", "hidden" }) do
   test("native stdio linegrid engine footer: " .. scenario, function()
     local child = vim.fn.jobstart({ vim.g.grip_test_progpath, "--clean", "--embed", "--headless", "-n", "-i", "NONE",
       "-u", "tests/minimal_init.lua" }, { rpc = true })

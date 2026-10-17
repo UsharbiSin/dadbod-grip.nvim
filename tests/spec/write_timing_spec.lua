@@ -317,7 +317,8 @@ test("confirmed DDL helper does not refresh a newer FK result on completion", fu
   assert(s.state==expected and text(buf)==expected_text,"DDL callback refreshed unrelated parent state")
 end)
 
-for _, reason in ipairs({"command timed out","sqlite3 exited with code 124"}) do
+for _, reason in ipairs({"command timed out","sqlite3 exited with code 124", "duckdb exited with code 130",
+    "query interrupted; database outcome unknown", "query interrupted; database outcome unknown; process completion unknown"}) do
   test("unconfirmed write wait keeps pending mutation and reports unknown outcome: " .. reason, function()
     local buf,s = open("INSERT INTO writes VALUES(3,'three')")
     local before,execute,notify_fn = text(buf),db.execute,vim.notify

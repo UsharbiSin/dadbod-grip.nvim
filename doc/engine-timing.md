@@ -1,10 +1,15 @@
 # Engine timing
 
-`setup({ engine_timing = true })` enables collection for the main result SELECT
-and refresh. The default is `false`. `db.query(sql, url, opts)` and
+`setup({ engine_timing = true })` enables collection for the main result SELECT,
+refresh, and actual database write execution. The default is `false`. `db.query(sql, url, opts)` and
 `db.execute(sql, url, opts)` also accept `{ engine_timing = true }` per call.
 COUNT, schema, primary-key, and other catalog calls are not opted in by the grid.
 Collection is independent of the result timing display preference.
+Successful write/reload results retain `Write engine` separately from the
+reload SELECT's `Engine` value. Both belong to their immutable result rows;
+metadata, FK navigation, and later unrelated refreshes inherit neither write
+duration. `show_result_time = false` hides all engine/client footer timings
+without changing collection. Zen's `show_hints` is independent.
 
 The `Engine` label means **DuckDB profiler latency**, using its JSON `latency`
 metric, in seconds, converted to milliseconds. It measures the adapter statement

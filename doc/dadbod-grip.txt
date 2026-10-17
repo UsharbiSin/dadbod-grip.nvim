@@ -178,6 +178,11 @@ parsing are outside this metric. It is elapsed query latency, not cumulative
 operator CPU, network latency, or the execution time of a remote attached DB.
 The existing client clock keeps its own meaning. Collection is independent
 of timing display preferences and adds profiling overhead.
+Actual database writes also opt in. After a successful reload, "Write engine"
+retains the write's profiler latency separately from that SELECT's "Engine".
+Metadata and later unrelated refreshes inherit neither write duration.
+`show_result_time = false` hides Engine and Write engine with client timings;
+collection continues. `show_hints` controls Zen shortcuts independently.
 The first eligible call probes JSON/ALL support once using a synthetic SELECT
 in a fresh in-memory client without an init file or attachments. Results are
 cached per executable identity; its time belongs to that first client clock.

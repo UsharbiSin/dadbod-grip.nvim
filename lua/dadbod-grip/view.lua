@@ -859,9 +859,15 @@ local function build_render(session, opts, bufnr)
   end
   local engine = session._query_engine_times and session._query_engine_times[st.rows]
   local engine_time_row
-  if engine and require("dadbod-grip").get_opts().show_result_time ~= false then
+  if engine and show_result_time then
     engine_time_row = #lines
     table.insert(lines, require("dadbod-grip.result_hints").engine_time(engine, math.huge))
+  end
+  local write_engine = session._write_engine_times and session._write_engine_times[st.rows]
+  local write_engine_time_row
+  if write_engine and show_result_time then
+    write_engine_time_row = #lines
+    table.insert(lines, require("dadbod-grip.result_hints").engine_time(write_engine, math.huge, "Write engine"))
   end
 
   -- ── Filter lines (one per active clause: always fully visible, never truncated) ──
@@ -917,7 +923,7 @@ local function build_render(session, opts, bufnr)
   end
 
   local data_start = has_type_row and 5 or 4
-  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {}, query_time_row = query_time_row, query_elapsed_ms = query_elapsed_ms, engine_time_row = engine_time_row, engine_timing = engine, status_row = status_row, status_items = status_items, status_rows = status_rows }
+  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {}, query_time_row = query_time_row, query_elapsed_ms = query_elapsed_ms, engine_time_row = engine_time_row, engine_timing = engine, write_engine_time_row = write_engine_time_row, write_engine_timing = write_engine, status_row = status_row, status_items = status_items, status_rows = status_rows }
 end
 
 -- ── namespace for extmarks ───────────────────────────────────────────────

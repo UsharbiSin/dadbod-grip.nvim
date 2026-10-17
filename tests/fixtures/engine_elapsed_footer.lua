@@ -1,9 +1,13 @@
 return function(scenario)
+  if scenario == "zen" or scenario == "hidden" then
+    require("dadbod-grip").setup({ show_hints = false, show_result_time = scenario ~= "hidden" })
+  end
   local view, data = require("dadbod-grip.view"), require("dadbod-grip.data")
   local st = data.new({ columns = { "id", "wide" }, rows = { { "1", string.rep("data ", 25) } },
     primary_keys = { "id" }, table_name = "engine_fixture" })
   local buf = view.open(st, "sqlite:synthetic-only", nil, { elapsed_ms = 44,
     engine_timing = { status = "available", elapsed_ms = 12.345, source = "duckdb_profile" },
+    write_engine_timing = { status = "available", elapsed_ms = 8.1, source = "duckdb_profile" },
     reuse_win = vim.api.nvim_get_current_win(), max_col_width = 100 })
   local win = vim.api.nvim_get_current_win()
   local function check(w)
@@ -15,7 +19,14 @@ return function(scenario)
       end
       text = text .. "\n"
     end
+    if scenario == "hidden" then
+      assert(not text:find("ngine:", 1, true) and not text:find("44ms client", 1, true), text)
+      assert(view._sessions[buf]._query_engine_times[st.rows].elapsed_ms == 12.345)
+      assert(view._sessions[buf]._write_engine_times[st.rows].elapsed_ms == 8.1)
+      return
+    end
     assert(text:find("Engine: 12.3ms", 1, true), "engine label missing from visible native footer: " .. text)
+    assert(text:find("Write engine: 8.1ms", 1, true), "write engine label missing: " .. text)
     assert(text:find("44ms client", 1, true), "client label lost: " .. text)
     if info.width >= 60 then assert(text:find("DuckDB profiler latency", 1, true), text) end
   end
