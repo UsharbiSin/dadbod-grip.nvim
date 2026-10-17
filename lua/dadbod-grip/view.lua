@@ -823,6 +823,12 @@ local function build_render(session, opts)
     query_time_row = #lines
     table.insert(lines, require("dadbod-grip.result_hints").query_time(query_elapsed_ms, math.huge))
   end
+  local engine = session._query_engine_times and session._query_engine_times[st.rows]
+  local engine_time_row
+  if engine and require("dadbod-grip").get_opts().show_result_time ~= false then
+    engine_time_row = #lines
+    table.insert(lines, require("dadbod-grip.result_hints").engine_time(engine, math.huge))
+  end
 
   -- ── Filter lines (one per active clause: always fully visible, never truncated) ──
   if session.query_spec and #session.query_spec.filters > 0 then
@@ -873,7 +879,7 @@ local function build_render(session, opts)
   table.insert(lines, "")
 
   local data_start = has_type_row and 5 or 4
-  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {}, query_time_row = query_time_row, query_elapsed_ms = query_elapsed_ms }
+  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {}, query_time_row = query_time_row, query_elapsed_ms = query_elapsed_ms, engine_time_row = engine_time_row, engine_timing = engine }
 end
 
 -- ── namespace for extmarks ───────────────────────────────────────────────
@@ -1417,6 +1423,8 @@ function M.open(state, url, query_sql, opts)
     hidden_columns = {},
     elapsed_ms = opts and opts.elapsed_ms or nil,
     _query_times = setmetatable(opts and opts.elapsed_ms ~= nil and { [state.rows] = opts.elapsed_ms } or {},
+      { __mode = "k" }),
+    _query_engine_times = setmetatable(opts and opts.engine_timing and { [state.rows] = opts.engine_timing } or {},
       { __mode = "k" }),
     write_mode = (opts and opts.write == true) and true or false,
     pinned = false,

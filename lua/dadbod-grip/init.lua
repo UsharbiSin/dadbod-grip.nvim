@@ -31,6 +31,7 @@ local OPTS = {
   limit       = 100,
   max_col_width = 40,
   timeout     = 10000,
+  engine_timing = false,
   completion  = true,
   connections_path = nil,
   picker      = "builtin",
@@ -763,7 +764,7 @@ end
 --- @return table { result: table|nil, err: string|nil, elapsed_ms: number }
 local function fetch_refresh(url, query_sql, table_name)
   local t0 = vim.uv.hrtime()
-  local result, err = db.query(query_sql, url)
+  local result, err = db.query(query_sql, url, { engine_timing = OPTS.engine_timing })
   local elapsed_ms = math.floor((vim.uv.hrtime() - t0) / 1e6)
   if err then return { err = err, elapsed_ms = elapsed_ms } end
 
@@ -813,6 +814,7 @@ local function apply_refresh(bufnr, fetched, owner, generation, query_update)
   session.elapsed_ms = fetched.elapsed_ms
   session.last_action = "query"
   session._query_times[new_state.rows] = fetched.elapsed_ms
+  session._query_engine_times[new_state.rows] = fetched.result.engine_timing
   view.render(bufnr, new_state)
 end
 
@@ -1319,6 +1321,7 @@ function M.open(arg, url, opts)
   local view_opts = vim.tbl_extend("force", {
     max_col_width = OPTS.max_col_width,
     elapsed_ms    = elapsed_ms,
+    engine_timing = result.engine_timing,
     query_spec    = spec,
     total_rows    = total_rows,
   }, opts or {})
@@ -1816,6 +1819,7 @@ end
 ---@field ollama_url? string Ollama base URL (default: http://localhost:11434)
 
 ---@class DadbodGripOpts
+---@field engine_timing? boolean  Collect opt-in DuckDB profiler latency (default: false)
 ---@field limit? integer         Rows per page (default: 100)
 ---@field max_col_width? integer Max display width per column (default: 40)
 ---@field timeout? integer       Query timeout in ms (default: 10000)
@@ -1836,6 +1840,7 @@ function M.setup(opts)
     limit         = { opts.limit,         "number",  true },
     max_col_width = { opts.max_col_width,  "number",  true },
     timeout       = { opts.timeout,        "number",  true },
+    engine_timing = { opts.engine_timing, "boolean", true },
     completion       = { opts.completion,      "boolean", true },
     connections_path = { opts.connections_path, "string",  true },
     picker           = { opts.picker, function(v)
@@ -1855,6 +1860,7 @@ function M.setup(opts)
   OPTS.limit        = opts.limit        or 100
   OPTS.max_col_width = opts.max_col_width or 40
   OPTS.timeout      = opts.timeout      or 10000
+  if opts.engine_timing ~= nil then OPTS.engine_timing = opts.engine_timing end
   if opts.completion ~= nil then OPTS.completion = opts.completion end
   OPTS.connections_path = opts.connections_path or nil
   OPTS.picker = opts.picker or "builtin"

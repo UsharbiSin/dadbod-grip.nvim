@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in `engine_timing = true` collects DuckDB profiler latency during the
+  original single-statement run and shows a distinct Engine footer. Batches
+  and other adapters report unsupported timing; missing or invalid profiles
+  report unavailable timing. Collection defaults off; an enabled profile never
+  reruns its statement.
 - The loading float shows live elapsed time after half a second (`3.4s`,
   `1m12s` past a minute). Nested steps keep the outer operation's clock, and
   long labels shorten to keep the time visible. The timer stops when the

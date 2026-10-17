@@ -323,12 +323,21 @@ local function via_adapter(url, fn, ...)
   return result, err
 end
 
--- ── public interface (unchanged signatures) ───────────────────────────────
+-- ── public interface (optional per-call engine timing for query/execute) ──
 
-function M.query(sql, url)
+local function with_engine_timing(result, conn, opts)
+  if result and opts and opts.engine_timing == true and not result.engine_timing then
+    result.engine_timing = { status = "unsupported", adapter = adapters.kind(conn), reason = "adapter_unsupported" }
+  end
+  return result
+end
+
+function M.query(sql, url, opts)
+  if type(opts) ~= "table" then opts = nil end
   local adapter, conn, err = resolve(url)
   if not adapter then return nil, err end
-  return via_adapter(url, adapter.query, sql, conn)
+  local result, query_err = via_adapter(url, adapter.query, sql, conn, opts)
+  return with_engine_timing(result, conn, opts), query_err
 end
 
 function M.get_primary_keys(table_name, url)
@@ -343,10 +352,12 @@ function M.get_column_info(table_name, url)
   return via_adapter(url, adapter.get_column_info, table_name, conn)
 end
 
-function M.execute(sql, url)
+function M.execute(sql, url, opts)
+  if type(opts) ~= "table" then opts = nil end
   local adapter, conn, err = resolve(url)
   if not adapter then return nil, err end
-  return via_adapter(url, adapter.execute, sql, conn)
+  local result, exec_err = via_adapter(url, adapter.execute, sql, conn, opts)
+  return with_engine_timing(result, conn, opts), exec_err
 end
 
 --- Ping a connection. Returns true on success, false on any error.
