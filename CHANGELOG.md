@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-10-17
+
 ### Added
 
 - Welcome keeps the DBG logo and offers four actionable start rows. Enter
@@ -31,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Result shortcut hints fit in two rows using each window's width and configured
   keys. Narrow windows prioritize core actions and help; an ellipsis marks
   omitted hints when it fits. Table data keeps its horizontal scrolling.
+- Opening SQL while another pane is zoomed restores its split layout. Opening
+  the already zoomed SQL pane preserves its zoom, draft, and cursor position.
 
 ## [3.13.0] - 2026-10-16
 
