@@ -46,6 +46,8 @@ local OPTS = {
   -- visible when a long table scrolls past it. Costs one screen line.
   sticky_header = true,
   open_sidebar = true,
+  show_running_time = true,
+  show_result_time = true,
 }
 
 --- Return a copy of the current options.
@@ -1841,6 +1843,8 @@ end
 ---@field border? string|table   Float window border style (default: "rounded")
 ---@field cell_split? string     Cell buffer (gB) split style: "horizontal"|"vertical"
 ---@field open_sidebar? boolean  Open the schema sidebar on connection (default: true)
+---@field show_running_time? boolean Show elapsed time in the loading float (default: true)
+---@field show_result_time? boolean Show retained query/action durations (default: true)
 
 ---Setup dadbod-grip with user options.
 ---@param opts? DadbodGripOpts
@@ -1867,6 +1871,8 @@ function M.setup(opts)
     discovery     = { opts.discovery, "boolean", true },
     sticky_header = { opts.sticky_header, "boolean", true },
     open_sidebar  = { opts.open_sidebar,  "boolean", true },
+    show_running_time = { opts.show_running_time, "boolean", true },
+    show_result_time  = { opts.show_result_time,  "boolean", true },
   })
   OPTS.limit        = opts.limit        or 100
   OPTS.max_col_width = opts.max_col_width or 40
@@ -1880,6 +1886,8 @@ function M.setup(opts)
   if opts.discovery ~= nil then OPTS.discovery = opts.discovery end
   if opts.sticky_header ~= nil then OPTS.sticky_header = opts.sticky_header end
   OPTS.open_sidebar = opts.open_sidebar ~= false
+  if opts.show_running_time ~= nil then OPTS.show_running_time = opts.show_running_time end
+  if opts.show_result_time ~= nil then OPTS.show_result_time = opts.show_result_time end
 
   -- Keymap overrides: stored at module level for keymaps.get() to read.
   if opts.keymaps then

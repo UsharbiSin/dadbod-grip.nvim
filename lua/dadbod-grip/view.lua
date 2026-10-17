@@ -759,6 +759,7 @@ local function build_render(session, opts)
   -- ── Status line ──
   local staged_count = data.count_staged(st)
   local status_parts = {}
+  local show_result_time = require("dadbod-grip").get_opts().show_result_time
 
   -- Row/page info
   if session.query_spec and session.total_rows then
@@ -785,11 +786,11 @@ local function build_render(session, opts)
   local timing_str
   if session.elapsed_ms and session.last_action and session.last_action ~= "query" then
     local action = session.last_action
-    timing_str = session.elapsed_ms .. "ms " .. action
+    timing_str = show_result_time and (session.elapsed_ms .. "ms " .. action) or action
     table.insert(status_parts, timing_str)
   end
   local write_ms = session._write_times and session._write_times[st.rows]
-  if write_ms ~= nil and require("dadbod-grip").get_opts().show_result_time ~= false then
+  if write_ms ~= nil and show_result_time then
     local duration = write_ms < 1000 and (write_ms .. "ms") or ui.format_elapsed(write_ms)
     table.insert(status_parts, "Write: " .. duration .. " client")
   end
@@ -824,7 +825,7 @@ local function build_render(session, opts)
   -- original rows. Weak keys keep only durations whose results are still held.
   local query_elapsed_ms = session._query_times and session._query_times[st.rows]
   local query_time_row
-  if query_elapsed_ms ~= nil then
+  if show_result_time and query_elapsed_ms ~= nil then
     query_time_row = #lines
     table.insert(lines, require("dadbod-grip.result_hints").query_time(query_elapsed_ms, math.huge))
   end

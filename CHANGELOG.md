@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. Staged apply history now records its client write duration.
   Completion preserves navigation and edits made while waiting. Interrupted
   or timed-out client waits report an unknown database outcome before retry.
+
+- Independent `show_running_time` and `show_result_time` options (both true by
+  default) hide the loading counter or retained result durations. Loading
+  animation, completed action status, and history measurement remain available.
 - The loading float shows live elapsed time after half a second (`3.4s`,
   `1m12s` past a minute). Nested steps keep the outer operation's clock, and
   long labels shorten to keep the time visible. The timer stops when the
