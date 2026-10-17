@@ -153,8 +153,14 @@ and is not configurable. It resets for the next operation. Long labels are
 shortened to keep the elapsed time visible. The counter measures waiting;
 it does not report database progress or identify a hung query. CLI timeouts
 apply separately to each call, so a multi-step operation may take longer.
-The grid status line still reports the query round-trip afterwards
-("3401ms query"), and |grip-history| keeps that number per query.
+After a successful query, the results footer keeps its client-observed
+round-trip, such as "Query: 3.4s client" or "Query: 17ms client". This duration
+measures db.query, including the client process and result parsing. It excludes
+column/primary-key lookups, pagination counts, and rendering, so it can be
+shorter than the running whole-operation clock. History keeps the same query
+duration in milliseconds. The footer stays visible during horizontal data
+scrolling; narrow windows shorten its label. Failed or interrupted requests
+keep the previous result and its original duration.
 
 Set `open_sidebar = false` to connect directly into the main workspace. The
 sidebar remains available through :GripSchema, `gb`, or `1`.

@@ -142,7 +142,7 @@ These commands cover the normal path:
 | `:GripHome` | Returns to the welcome screen. |
 | `:GripZoom` | Maximizes the current pane or restores its split layout. |
 
-A slow query counts up while it runs: past half a second the loading float appends live elapsed time (`querying users... 3.4s`), so a long wait is legible before the grid appears.
+A slow query counts up while it runs: past half a second the loading float appends live elapsed time (`querying users... 3.4s`), so a long wait is legible before the grid appears. After a successful query, the results footer keeps its client-observed query duration, such as `Query: 3.4s client`.
 
 In the query pad, `<C-CR>` runs SQL and `gA` generates SQL. In the grid, `f` filters by the current cell, `s` sorts the current column, `gf` follows a foreign key, and `gE` exports to the clipboard.
 
