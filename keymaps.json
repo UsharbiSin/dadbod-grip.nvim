@@ -780,7 +780,7 @@
     {
       "action": "grid_rename_col",
       "default": "gN",
-      "description": "Renames the displayed column header.",
+      "description": "Renames the database column after confirmation.",
       "category": "grid inspection",
       "surfaces": ["grid"],
       "modes": ["n"]

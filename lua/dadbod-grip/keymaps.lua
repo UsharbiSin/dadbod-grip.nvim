@@ -180,7 +180,7 @@ add("grid inspection", grid, normal, {
   { "grid_copy_sql", "gc", "Copies the staged SQL." },
   { "grid_table_info", "gi", "Opens compact table information." },
   { "grid_table_props", "gI", "Opens detailed table properties." },
-  { "grid_rename_col", "gN", "Renames the displayed column header." },
+  { "grid_rename_col", "gN", "Renames the database column after confirmation." },
   { "grid_col_stats", "gS", "Opens statistics for the current column." },
   { "grid_profile", "gR", "Profiles every column in the current table." },
   { "grid_show_ddl", "gV", "Shows the CREATE TABLE statement." },

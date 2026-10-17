@@ -75,6 +75,8 @@ Open the disposable demo:
 The demo recreates its database from the bundled seed each time, so edits cannot damage your own data.
 It opens the schema sidebar and walkthrough with the cursor inside the first SQL block. Press `<C-CR>` to run that block; opening the demo does not run it automatically. To browse a table first, press `gb`, select `rolls`, press Enter, and then press `2` to return to SQL.
 
+The walkthrough's **Daily practice** section covers finding a view, filtering and exporting results, staging an edit, reviewing SQL, undoing or applying it, and keeping useful queries. Both demo engines include an incident summary view. DuckDB adds a collapsible reporting schema and a SQL macro. The [demo guide](demo/README.md) also provides an optional local PostgreSQL lab for nested partitions, a view, and function source browsing.
+
 Run `:Grip` or `:GripHome` for the welcome screen. The DBG logo sits above four action rows: open the demo, connect a database, browse tables, and open SQL. Use Tab/Shift-Tab or native `j`/`k` to select a row, then press Enter. The diagram follows configured keys; with defaults, `1` opens schema, `2` opens SQL, and `3` opens the table picker.
 
 Other panes have contextual actions: `2` in SQL opens history, and `1` in schema opens connections. Press `?` for that pane's effective keys; the help ends with Chonk's About section. Default bindings remain unchanged.

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-10-17
+
+### Added
+
+- The built-in demo includes an incident summary view on both engines, plus a DuckDB reporting schema, monthly report, and severity macro. The walkthrough teaches daily browsing, editing, review, export, history, and saved-query tasks with ASCII guides.
+- An optional local PostgreSQL lab demonstrates nested partitions, a view, and function source browsing.
+
+### Fixed
+
+- The keymap catalog describes `gN` as a database column rename with confirmation, matching its existing behavior.
+
 ## [3.14.0] - 2026-10-17
 
 ### Added
@@ -733,7 +744,9 @@ older tags are left in place so anyone pinned to them keeps working.
 - **joryeugene** — SQL Server adapter, PostgreSQL routines in the schema sidebar, focused ER diagram
   ([PR #17](https://github.com/joryeugene/dadbod-grip.nvim/pull/17)).
 
-[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...HEAD
+[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.15.0...HEAD
+[3.15.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.14.0...v3.15.0
+[3.14.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...v3.14.0
 [3.13.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.12.0...v3.13.0
 [3.12.0]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.12.0
 [3.11.1]: https://github.com/joryeugene/dadbod-grip.nvim/releases/tag/v3.11.1
