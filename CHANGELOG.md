@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keys. Narrow windows prioritize core actions and help; an ellipsis marks
   omitted hints when it fits. Table data keeps its horizontal scrolling.
 - Opening SQL while another pane is zoomed restores its split layout. Opening
-  the already zoomed SQL pane preserves its zoom, draft, and cursor position.
+  SQL in the same zoomed window preserves its zoom, draft, and cursor position.
 
 ## [3.13.0] - 2026-10-16
 
