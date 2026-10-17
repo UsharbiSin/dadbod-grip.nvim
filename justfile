@@ -126,8 +126,9 @@ e2e-visual: seed-sqlite
     session="grip-e2e-$$-$RANDOM"
     sync="$session"
     expected_columns="${GRIP_E2E_EXPECT_COLUMNS:-100}"
+    exit_receipt="$(mktemp)"
 
-    cleanup() { tmux kill-session -t "$session" 2>/dev/null || true; }
+    cleanup() { tmux kill-session -t "$session" 2>/dev/null || true; rm -f "$exit_receipt"; }
     trap cleanup EXIT INT TERM
 
     tmux new-session -d -s "$session" -c "$PWD" /bin/bash --noprofile --norc
@@ -135,8 +136,8 @@ e2e-visual: seed-sqlite
     tmux set-option -t "$session" remain-on-exit on
     tmux resize-window -t "$session" -x 100 -y 36
 
-    printf -v launch 'exec env GRIP_TMUX_SYNC=%q GRIP_EXPECT_COLUMNS=%q %q --cmd %q -u %q -c %q' \
-      "$sync" "$expected_columns" "$nvim_bin" "set rtp^=." "tests/minimal_init.lua" \
+    printf -v launch 'exec env GRIP_TMUX_SYNC=%q GRIP_EXPECT_COLUMNS=%q bash tests/fixtures/record_exit.sh %q %q --cmd %q -u %q -c %q' \
+      "$sync" "$expected_columns" "$exit_receipt" "$nvim_bin" "set rtp^=." "tests/minimal_init.lua" \
       "lua vim.schedule(function() dofile('tests/fixtures/workspace_layout_integration.lua') end)"
     tmux send-keys -t "$session" "$launch" Enter
 
@@ -220,7 +221,22 @@ e2e-visual: seed-sqlite
     snapshot "GripImport committed rows"
     tmux send-keys -t "$session" :qa! Enter
 
-    bash tests/fixtures/wait_for_tmux_exit.sh "$session"
+    for _ in {1..100}; do
+      receipt="$(cat "$exit_receipt")"
+      [[ "$receipt" =~ ^exit:([0-9]+):done$ ]] && break
+      sleep 0.05
+    done
+    if [[ ! "$receipt" =~ ^exit:([0-9]+):done$ ]]; then
+      echo "e2e-visual Neovim exit status was not recorded" >&2
+      tmux capture-pane -p -t "$session" >&2
+      exit 1
+    fi
+    status="${BASH_REMATCH[1]}"
+    if [[ "$status" != 0 ]]; then
+      echo "e2e-visual failed with status $status" >&2
+      tmux capture-pane -p -t "$session" >&2
+      exit "$status"
+    fi
     echo "e2e-visual: layout and staged import passed at 100, 80, and 160 columns"
 
 # Open Neovim connected to DuckDB for httpfs testing
