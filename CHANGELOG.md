@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The results footer retains the successful query's client-observed duration
   (`Query: 17ms client`, `Query: 1.6s client`). It stays visible during
   horizontal data scrolling and adapts to each window's width. Staged edits
-  retain that result's duration; failed or interrupted queries leave the
-  previous result and its duration intact.
+  retain that result's duration. If the SELECT fails or is interrupted, the
+  previous result and its duration stay intact.
 
 ## [3.15.0] - 2026-10-17
 
