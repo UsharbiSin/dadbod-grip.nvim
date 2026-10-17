@@ -5,15 +5,23 @@ local adapter = require("dadbod-grip.adapters.duckdb")
 local adapters = require("dadbod-grip.adapters")
 local grip = require("dadbod-grip")
 local timing = require("dadbod-grip.engine_timing")
-if timing.options then assert(timing.options({ engine_timing = true })) end
 local pass, fail = 0, 0
 local function test(name, fn)
   local ok, err = xpcall(fn, debug.traceback)
   if ok then pass = pass + 1 else fail = fail + 1; print("FAIL: " .. name .. ": " .. tostring(err)) end
 end
 local function eq(a, b) assert(a == b, "expected " .. tostring(b) .. ", got " .. tostring(a)) end
-local function mock_run(fn, check)
-  local original, calls, paths = adapters.run_cmd, 0, {}
+local function mock_run(fn, check, probe_capability)
+  local original, options, executable = adapters.run_cmd, timing.options, vim.fn.executable
+  local calls, paths = 0, {}
+  -- Collection cases supply their capability explicitly; only capability cases
+  -- exercise the metadata probe. Neither boundary may spawn an installed CLI.
+  if not probe_capability then
+    timing.options = function(opts)
+      if type(opts) == "table" and opts.engine_timing == true then return opts end
+    end
+  end
+  vim.fn.executable = function(name) return name == "duckdb" and 1 or executable(name) end
   adapters.run_cmd = function(args, timeout, opts)
     calls = calls + 1
     local raw = opts.stdin:match("SET profiling_output = (.-);\n")
@@ -26,7 +34,7 @@ local function mock_run(fn, check)
     return fn(path, sql, opts.stdin, args, timeout)
   end
   local ok, err = xpcall(function() check(function() return calls end) end, debug.traceback)
-  adapters.run_cmd = original
+  adapters.run_cmd, timing.options, vim.fn.executable = original, options, executable
   for _, path in ipairs(paths) do
     eq(vim.fn.filereadable(path), 0)
     eq(vim.fn.isdirectory(vim.fn.fnamemodify(path, ":h")), 0)
@@ -34,6 +42,18 @@ local function mock_run(fn, check)
   if not ok then error(err, 0) end
 end
 local function csv() return "value\n42\n", "", 0 end
+
+test("collection fixtures restore process and capability boundaries after failure", function()
+  local run, options, executable = adapters.run_cmd, timing.options, vim.fn.executable
+  local ok, err = pcall(function()
+    mock_run(function() error("synthetic fixture failure") end, function()
+      adapter.query("SELECT 42 AS value", "duckdb::memory:", { engine_timing = true })
+    end)
+  end)
+  eq(ok, false); assert(tostring(err):find("synthetic fixture failure", 1, true))
+  eq(adapters.run_cmd, run); eq(timing.options, options)
+  eq(vim.fn.executable, executable)
+end)
 
 test("collection defaults off, validates boolean and preserves explicit value", function()
   eq(grip.get_opts().engine_timing, false)
@@ -206,6 +226,42 @@ for _, example in ipairs({ { "postgresql", "postgresql://synthetic" }, { "mysql"
   end)
 end
 
+test("missing DuckDB keeps the install diagnostic and never invokes a process", function()
+  local executable, run = vim.fn.executable, adapters.run_cmd
+  vim.fn.executable = function(name) return name == "duckdb" and 0 or executable(name) end
+  adapters.run_cmd = function() error("missing executable must not be invoked") end
+  local ok, err = xpcall(function()
+    for _, method in ipairs({ "query", "execute" }) do
+      local result, query_err = adapter[method]("SELECT 42 AS value", "duckdb::memory:", { engine_timing = true })
+      eq(result, nil); eq(query_err, "duckdb not found. Install duckdb.")
+    end
+  end, debug.traceback)
+  vim.fn.executable, adapters.run_cmd = executable, run
+  assert(ok, err)
+end)
+
+test("unresolvable profiling executable stays unavailable and preserves the ordinary query path", function()
+  local exepath = vim.fn.exepath
+  vim.fn.exepath = function(name) return name == "duckdb" and "" or exepath(name) end
+  local ok, err = xpcall(function()
+    mock_run(function(path, sql, _, args)
+      if sql and sql:find("_grip_profile_capability", 1, true) then
+        eq(args[1], ""); assert(path); return "", "synthetic executable not found", 127
+      end
+      eq(path, nil); eq(args[1], "duckdb"); return csv()
+    end, function(calls)
+      local result, query_err = adapter.query("SELECT 42 AS value", "duckdb::memory:", { engine_timing = true })
+      eq(query_err, nil); eq(calls(), 2); eq(result.rows[1][1], "42")
+      eq(result.engine_timing.status, "unavailable"); eq(result.engine_timing.elapsed_ms, nil)
+      eq(result.engine_timing.reason, "profiling_capability_unavailable")
+      result, query_err = adapter.query("SELECT 42 AS value", "duckdb::memory:", { engine_timing = true })
+      eq(query_err, nil); eq(calls(), 3); eq(result.engine_timing.status, "unavailable")
+    end, true)
+  end, debug.traceback)
+  vim.fn.exepath = exepath
+  assert(ok, err)
+end)
+
 test("one cached metadata capability probe degrades unsupported clients before user SQL", function()
   local exepath = vim.fn.exepath
   vim.fn.exepath = function() return "synthetic-unsupported-client" end
@@ -221,7 +277,7 @@ test("one cached metadata capability probe degrades unsupported clients before u
       eq(result.engine_timing.status, "unsupported"); eq(result.engine_timing.elapsed_ms, nil)
       result, query_err = adapter.query("SELECT 42 AS value", "duckdb::memory:", { engine_timing = true })
       eq(query_err, nil); eq(calls(), 3); eq(result.engine_timing.status, "unsupported")
-    end)
+    end, true)
   end, debug.traceback)
   vim.fn.exepath = exepath
   assert(ok, err)
