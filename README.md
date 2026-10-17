@@ -73,6 +73,13 @@ Open the disposable demo:
 ```
 
 The demo recreates its database from the bundled seed each time, so edits cannot damage your own data.
+It opens the schema sidebar and walkthrough with the cursor inside the first SQL block. Press `<C-CR>` to run that block; opening the demo does not run it automatically. To browse a table first, press `gb`, select `rolls`, press Enter, and then press `2` to return to SQL.
+
+The walkthrough's **Daily practice** section covers finding a view, filtering and exporting results, staging an edit, reviewing SQL, undoing or applying it, and keeping useful queries. Both demo engines include an incident summary view. DuckDB adds a collapsible reporting schema and a SQL macro. The [demo guide](demo/README.md) also provides an optional local PostgreSQL lab for nested partitions, a view, and function source browsing.
+
+Run `:Grip` or `:GripHome` for the welcome screen. The DBG logo sits above four action rows: open the demo, connect a database, browse tables, and open SQL. Use Tab/Shift-Tab or native `j`/`k` to select a row, then press Enter. The diagram follows configured keys; with defaults, `1` opens schema, `2` opens SQL, and `3` opens the table picker.
+
+Other panes have contextual actions: `2` in SQL opens history, and `1` in schema opens connections. Press `?` for that pane's effective keys; the help ends with Chonk's About section. Default bindings remain unchanged.
 
 ### Connect to a database
 
@@ -133,12 +140,17 @@ These commands cover the normal path:
 | `:GripExport` | Exports the current page or every matching row. |
 | `:GripImport` | Previews and stages CSV, TSV, or JSON rows from the clipboard or `!command`. |
 | `:GripHome` | Returns to the welcome screen. |
+| `:GripZoom` | Maximizes the current pane or restores its split layout. |
 
 A slow query counts up while it runs: past half a second the loading float appends live elapsed time (`querying users... 3.4s`), so a long wait is legible before the grid appears.
 
 In the query pad, `<C-CR>` runs SQL and `gA` generates SQL. In the grid, `f` filters by the current cell, `s` sorts the current column, `gf` follows a foreign key, and `gE` exports to the clipboard.
 
 The complete command and keymap reference lives in `:help dadbod-grip`. The [documentation website](https://jorypestorious.com/dadbod-grip-web/) provides task-focused guides and screenshots.
+
+Use `gb` to focus the sidebar, then `<Esc>` to close it. Press `gz` in the grid, query pad, sidebar, or welcome screen to zoom that pane, and press it again to restore the layout. Native `<C-w>` window navigation still works, and `<C-p>` opens the searchable command palette in the grid, query pad, and sidebar.
+
+Opening SQL from another zoomed pane restores its split layout. Result shortcut hints fit in two rows for each window's width and stay visible during horizontal table scrolling. Narrow panes prioritize help and core actions.
 
 ## Files and federation
 
@@ -173,6 +185,7 @@ require("dadbod-grip").setup({
 Set `open_sidebar = false` to connect directly into the main workspace. Set `completion = false` when another completion engine owns SQL suggestions. Set `ai = false` to skip SQL generation and schema preloading; the AI keys remain registered and explain that AI is disabled.
 
 All default values, picker integrations, connection fields, remappable actions, and AI-provider options live in `:help grip-config` and the [getting-started guide](https://jorypestorious.com/dadbod-grip-web/docs/getting-started).
+Welcome actions are also configurable, for example `keymaps = { welcome_next = "<F2>", welcome_activate = "<F3>" }`. Setting an action to `false` removes its mapping. Welcome keeps command fallbacks visible, and `?` shows effective keys for the current pane. The palette remains available in the grid, query pad, and sidebar.
 
 ## Safety and privacy
 

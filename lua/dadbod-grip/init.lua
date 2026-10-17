@@ -12,6 +12,7 @@ local ui     = require("dadbod-grip.ui")
 local explain = require("dadbod-grip.explain")
 local filetypes = require("dadbod-grip.filetypes")
 local importer = require("dadbod-grip.importer")
+local adapters = require("dadbod-grip.adapters")
 
 local M = {}
 M._version = require("dadbod-grip.version")
@@ -110,9 +111,318 @@ local function deny_if_readonly(cmd_name, url)
   return require("dadbod-grip.connections").deny_if_readonly(cmd_name, url)
 end
 
+-- Share the token stream between projection and source checks: comments and
+-- quoted identifiers must never supply a different FROM to either check.
+local function tokenize_select(sql_text, adapter_kind)
+  local tokens = {}
+  local i = 1
+  local len = #sql_text
+  -- Keep UTF-8 identifier bytes together; punctuation still ends the word.
+  local word_start = "[%a_\128-\255]"
+  local word_part = "[%w_$\128-\255]"
+  local function skip_space()
+    while i <= len and sql_text:sub(i, i):match("%s") do i = i + 1 end
+  end
+
+  local function read_word()
+    local start = i
+    if not sql_text:sub(i, i):match(word_start) then return nil end
+    i = i + 1
+    while i <= len and sql_text:sub(i, i):match(word_part) do i = i + 1 end
+    return sql_text:sub(start, i - 1)
+  end
+
+  local function read_number()
+    local prefix = sql_text:sub(i, i + 1):lower()
+    local radix_pattern = prefix == "0x" and "^0[xX]_?[%da-fA-F][%da-fA-F_]*"
+      or prefix == "0b" and "^0[bB]_?[01][01_]*"
+      or prefix == "0o" and "^0[oO]_?[0-7][0-7_]*"
+    local _, finish
+    if radix_pattern then
+      _, finish = sql_text:find(radix_pattern, i)
+      if not finish then return false end
+    else
+      _, finish = sql_text:find("^%d[%d_]*", i)
+      finish = finish or (i - 1)
+      if sql_text:sub(finish + 1, finish + 1) == "." then
+        _, finish = sql_text:find("^%.[%d_]*", finish + 1)
+      end
+      local _, exponent_end = sql_text:find("^[eE][+-]?%d[%d_]*", finish + 1)
+      finish = exponent_end or finish
+    end
+    i = finish + 1
+    -- Numeric suffixes must not become identifiers in qualification checks.
+    return not sql_text:sub(i, i):match(word_start)
+  end
+
+  local function read_quoted(quote, escape_string)
+    local close_quote = quote == "[" and "]" or quote
+    local value = {}
+    i = i + 1
+    while i <= len do
+      local ch = sql_text:sub(i, i)
+      if ch == "\\" and quote == "'" then
+        local start = i
+        while sql_text:sub(i, i) == "\\" do i = i + 1 end
+        local odd = (i - start) % 2 == 1
+        if escape_string and odd then
+          if i > len then return nil end
+          i = i + 1
+        elseif odd and sql_text:sub(i, i) == "'"
+            and (adapter_kind == "postgresql" or adapter_kind == "mysql") then
+          -- Session escape settings can change this quote's closing boundary.
+          return nil
+        end
+        value[#value + 1] = sql_text:sub(start, i - 1)
+      elseif ch == close_quote then
+        if sql_text:sub(i + 1, i + 1) == close_quote then
+          value[#value + 1] = close_quote
+          i = i + 2
+        else
+          i = i + 1
+          return table.concat(value)
+        end
+      else
+        value[#value + 1] = ch
+        i = i + 1
+      end
+    end
+    return nil
+  end
+
+  while i <= len do
+    skip_space()
+    if i > len then break end
+
+    local ch = sql_text:sub(i, i)
+    local next_ch = sql_text:sub(i + 1, i + 1)
+
+    if ch == "-" and next_ch == "-" then
+      -- MySQL requires whitespace/control after --; otherwise it can be
+      -- arithmetic, e.g. total--1 AS status, rather than a comment.
+      local following = sql_text:sub(i + 2, i + 2)
+      if adapter_kind == "mysql" and following ~= ""
+          and not following:match("[%s%c]") then return nil end
+      local newline = sql_text:find("[\r\n]", i + 2)
+      -- PostgreSQL and DuckDB also end comments at a bare CR. Other clients
+      -- differ, so accept their shared CRLF form and reject an ambiguous CR.
+      if newline and sql_text:sub(newline, newline) == "\r"
+          and sql_text:sub(newline + 1, newline + 1) ~= "\n"
+          and adapter_kind ~= "postgresql" and adapter_kind ~= "duckdb" then return nil end
+      i = newline and (newline + 1) or (len + 1)
+    elseif ch == "/" and next_ch == "*" then
+      -- MySQL/MariaDB execute SQL inside these comment forms. Skipping them
+      -- could hide an alias or expression from the projection check.
+      if adapter_kind == "mysql"
+          and (sql_text:sub(i + 2, i + 2) == "!"
+            or sql_text:sub(i + 2, i + 3) == "M!") then return nil end
+      local depth = 1
+      i = i + 2
+      while i <= len and depth > 0 do
+        local pair = sql_text:sub(i, i + 1)
+        if pair == "/*" then
+          if adapter_kind ~= "postgresql" then return nil end
+          depth = depth + 1
+          i = i + 2
+        elseif pair == "*/" then
+          depth = depth - 1
+          i = i + 2
+        else
+          i = i + 1
+        end
+      end
+      if depth ~= 0 then return nil end
+    elseif ch == '"' or ch == "`" or ch == "'"
+        or (ch == "[" and adapter_kind ~= "postgresql" and adapter_kind ~= "duckdb") then
+      -- The MySQL/MariaDB adapter enables ANSI_QUOTES before each query,
+      -- so double quotes denote identifiers there too.
+      -- Adjacent string segments retain E-string escapes across newlines.
+      local previous = tokens[#tokens]
+      local escape_string = ch == "'" and previous and previous.escape_string
+      local ident = read_quoted(ch, escape_string)
+      if not ident then return nil end
+      tokens[#tokens + 1] = {
+        kind = ch == "'" and "literal" or "ident", text = ident, escape_string = escape_string,
+      }
+    elseif ch:match("%d") or (ch == "." and next_ch:match("%d")) then
+      if not read_number() then return nil end
+      tokens[#tokens + 1] = { kind = "literal" }
+    elseif ch:match(word_start) then
+      local word = read_word()
+      if word:upper() == "E" and sql_text:sub(i, i) == "'"
+          and (adapter_kind == "postgresql" or adapter_kind == "duckdb") then
+        local value = read_quoted("'", true)
+        if not value then return nil end
+        tokens[#tokens + 1] = { kind = "literal", text = value, escape_string = true }
+      else
+        tokens[#tokens + 1] = { kind = "ident", text = word, upper = word:upper() }
+      end
+    elseif ch == "$" and (adapter_kind == "postgresql" or adapter_kind == "duckdb") then
+      local delimiter = sql_text:match("^%$%$", i)
+        or sql_text:match("^%$[%a_\128-\255][%w_\128-\255]*%$", i)
+      if not delimiter then return nil end
+      local close = sql_text:find(delimiter, i + #delimiter, true)
+      if not close then return nil end
+      tokens[#tokens + 1] = { kind = "literal" }
+      i = close + #delimiter
+    elseif ch == "$" or (ch == "#" and adapter_kind ~= "postgresql" and adapter_kind ~= "duckdb") then
+      return nil
+    else
+      tokens[#tokens + 1] = { kind = ch }
+      i = i + 1
+    end
+  end
+  return tokens
+end
+
+-- Expose metadata only for direct columns of one known source. A dotted name
+-- may be a struct field, so its qualifier must match the actual table/alias.
+local function select_editable_table(sql_text, adapter_kind)
+  local tokens = tokenize_select(sql_text, adapter_kind)
+  if not tokens or not tokens[1] or tokens[1].upper ~= "SELECT" then return nil end
+
+  local from
+  for idx = 2, #tokens do
+    if tokens[idx].upper == "FROM" then
+      from = idx
+      break
+    end
+  end
+  if not from then return nil end
+
+  local pos = from + 1
+  local source = {}
+  while tokens[pos] and tokens[pos].kind == "ident" do
+    local part = tokens[pos]
+    if part.upper == "ONLY" or part.upper == "LATERAL" then return nil end
+    -- Table metadata represents schema separators as dots; a literal dot in
+    -- a quoted name would point mutations at a different qualified table.
+    if part.text == "" or part.text:find(".", 1, true) then return nil end
+    source[#source + 1] = part
+    pos = pos + 1
+    if not tokens[pos] or tokens[pos].kind ~= "." then break end
+    pos = pos + 1
+    if not tokens[pos] or tokens[pos].kind ~= "ident" then return nil end
+  end
+  if #source == 0 then return nil end
+
+  local clauses = {
+    WHERE = true, GROUP = true, HAVING = true, ORDER = true, LIMIT = true,
+    OFFSET = true, FETCH = true, FOR = true, WINDOW = true, QUALIFY = true,
+  }
+  local blocked = {
+    JOIN = true, INNER = true, LEFT = true, RIGHT = true, FULL = true,
+    CROSS = true, NATURAL = true, UNION = true, INTERSECT = true, EXCEPT = true,
+  }
+  local set_operations = { UNION = true, INTERSECT = true, EXCEPT = true }
+  local alias
+  local next_token = tokens[pos]
+  if next_token and next_token.upper == "AS" then
+    pos = pos + 1
+    next_token = tokens[pos]
+    if not next_token or next_token.kind ~= "ident" then return nil end
+    alias = next_token
+    pos = pos + 1
+  elseif next_token and next_token.kind == "ident"
+      and not clauses[next_token.upper] and not blocked[next_token.upper] then
+    alias = next_token
+    pos = pos + 1
+  end
+  next_token = tokens[pos]
+  if next_token and next_token.kind ~= ";" and not clauses[next_token.upper] then return nil end
+
+  -- Tail expressions do not change column lineage, but a top-level set
+  -- operation can append rows from an unrelated source under the same names.
+  local depth = 0
+  for idx = pos, #tokens do
+    local token = tokens[idx]
+    if token.kind == "(" then depth = depth + 1 end
+    if token.kind == ")" then depth = depth - 1 end
+    -- Require an identifier before the dot: 1. UNION is still a set operation.
+    local qualified = idx >= 3 and tokens[idx - 1].kind == "."
+      and tokens[idx - 2].kind == "ident"
+    if depth < 0 or (depth == 0 and not qualified and set_operations[token.upper]) then return nil end
+    if token.kind == ";" and (depth ~= 0 or idx ~= #tokens) then return nil end
+  end
+  if depth ~= 0 then return nil end
+
+  local function normalized(token)
+    if adapter_kind == "postgresql" then
+      return token.upper and token.text:lower() or token.text
+    end
+    return token.text:lower()
+  end
+
+  local value_keywords = {
+    CURRENT_DATE = true, CURRENT_TIME = true, CURRENT_TIMESTAMP = true,
+    ["NULL"] = true,
+  }
+  local dialect_values = {
+    postgresql = {
+      "LOCALTIME", "LOCALTIMESTAMP", "CURRENT_CATALOG", "CURRENT_ROLE",
+      "CURRENT_SCHEMA", "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER",
+      "TRUE", "FALSE",
+    },
+    mysql = {
+      "CURRENT_USER", "CURRENT_ROLE", "LOCALTIME", "LOCALTIMESTAMP",
+      "UTC_DATE", "UTC_TIME", "UTC_TIMESTAMP", "TRUE", "FALSE",
+    },
+    sqlserver = { "CURRENT_USER", "SESSION_USER", "SYSTEM_USER", "USER" },
+  }
+  for _, keyword in ipairs(dialect_values[adapter_kind] or {}) do
+    value_keywords[keyword] = true
+  end
+
+  pos = 2
+  if tokens[pos] and (tokens[pos].upper == "DISTINCT" or tokens[pos].upper == "ALL") then
+    pos = pos + 1
+  end
+  local function consume_item()
+    local parts = {}
+    while pos < from do
+      local token = tokens[pos]
+      if token.kind ~= "ident" and token.kind ~= "*" then return false end
+      parts[#parts + 1] = token
+      pos = pos + 1
+      if tokens[pos].kind ~= "." then break end
+      if token.kind == "*" then return false end
+      pos = pos + 1
+      if pos >= from then return false end
+    end
+    if #parts == 0 then return false end
+    if #parts == 1 then
+      return not value_keywords[parts[1].upper]
+    end
+    local qualifiers = #parts - 1
+    if alias then
+      return qualifiers == 1 and normalized(parts[1]) == normalized(alias)
+    end
+    if qualifiers == 1 then
+      return normalized(parts[1]) == normalized(source[#source])
+    end
+    if qualifiers ~= #source then return false end
+    for idx = 1, qualifiers do
+      if normalized(parts[idx]) ~= normalized(source[idx]) then return false end
+    end
+    return true
+  end
+
+  if not consume_item() then return nil end
+  while pos < from do
+    if tokens[pos].kind ~= "," then return nil end
+    pos = pos + 1
+    if not consume_item() then return nil end
+  end
+  local names = {}
+  for _, part in ipairs(source) do
+    names[#names + 1] = adapter_kind == "postgresql" and normalized(part) or part.text
+  end
+  return table.concat(names, ".")
+end
+
 -- Decide the query spec for a given :Grip argument.
 -- Returns (spec, table_name, file_path) or (nil, err_string).
-local function resolve_query(arg, page_size)
+local function resolve_query(arg, page_size, adapter_kind)
   if not arg or arg == "" then
     arg = vim.fn.expand("<cword>")
   end
@@ -151,32 +461,7 @@ local function resolve_query(arg, page_size)
         or flat:match("^%s*[Tt][Aa][Bb][Ll][Ee]%s+([%w_%.]+)")
       if raw then table_name = sql.unquote_ident(raw) end
     else
-      -- SELECT: extract from FROM clause for simple single-table queries
-      local after_from = flat:match("[Ff][Rr][Oo][Mm]%s+(.*)")
-      if after_from and not after_from:match("^%s*%(") then
-        -- Match full token including quotes (handles "schema"."table" compound)
-        local full_token = after_from:match('^"[^"]+"%.%s*"[^"]+"')
-          or after_from:match('^`[^`]+`%.%s*`[^`]+`')
-          or after_from:match('^"[^"]+"')
-          or after_from:match("^`[^`]+`")
-          or after_from:match("^[%w_%.]+")
-        if full_token then
-          -- Extract the FROM clause up to WHERE/ORDER/GROUP/HAVING/LIMIT/; to check for joins
-          local remainder = after_from:sub(#full_token + 1):upper()
-          local from_clause = remainder:match("^(.-)%f[%u]WHERE%f[^%u]")
-            or remainder:match("^(.-)%f[%u]ORDER%f[^%u]")
-            or remainder:match("^(.-)%f[%u]GROUP%f[^%u]")
-            or remainder:match("^(.-)%f[%u]HAVING%f[^%u]")
-            or remainder:match("^(.-)%f[%u]LIMIT%f[^%u]")
-            or remainder:match("^(.-)%s*;")
-            or remainder
-          local has_join = from_clause:match("%f[%u]JOIN%f[^%u]")
-          local has_comma = from_clause:match(",")
-          if not has_join and not has_comma then
-            table_name = sql.unquote_ident(full_token)
-          end
-        end
-      end
+      table_name = select_editable_table(arg, adapter_kind)
     end
     return query.new_raw(arg, page_size), table_name
   end
@@ -881,8 +1166,11 @@ function M.open(arg, url, opts)
     if not conn or conn == "" then conn = vim.g.db end
   end
 
-  -- Resolve query spec (must happen before connection check for file-as-table)
-  local spec, table_name_arg, file_path, mutation_sql = resolve_query(arg, OPTS.limit)
+  -- Resolve query spec (must happen before connection check for file-as-table).
+  -- Pass the adapter kind when available so projection parsing can stay
+  -- conservative around dialect-specific identifier quoting.
+  local adapter_kind = adapters.kind(db.resolved_url(conn))
+  local spec, table_name_arg, file_path, mutation_sql = resolve_query(arg, OPTS.limit, adapter_kind)
 
   -- Handle destructive statements (UPDATE/DELETE/INSERT/DDL)
   if mutation_sql then
@@ -1311,139 +1599,30 @@ function M.open_welcome()
     vim.api.nvim_buf_set_name(welcome_buf, "grip://welcome")
   end
 
-  local ver = "v" .. require("dadbod-grip.version")
-  -- Compact header matching help popup (help guy)
-  local logo = {
-    "",
-    "  ╔═╦═╦═╗",
-    "  ║d║b║g║  dadbod-grip " .. ver,
-    "  ╚═╩═╩═╝",
-    "  Editable database grids, inside Neovim.",
-    "",
-    "  ── Start ───────────────────────────────────────",
-    "  :GripStart    demo database + notebook",
-    "  :GripConnect  connect a database",
-    "  ?             full keymap reference",
-    "",
-    "  ── Navigate: 1 · 2 · 3 ─────────────────────────",
-    "  1   schema sidebar           2   query pad",
-    "  3   table / records          Q   this screen",
-    "  4   ER diagram               5-9 stats/cols/fk/idx",
-    "",
-    "  ── Query pad ───────────────────────────────────",
-    "  q       open pad             <C-CR>  run SQL block",
-    "  gn      notebook picker      gA      AI generation",
-    "  gh      query history        gq      load saved",
-    "  <C-s>   save query",
-    "",
-    "  ── Grid: edit ──────────────────────────────────",
-    "  i/<CR>  edit cell            x     set null",
-    "  o       insert row           d     delete row",
-    "  a       apply changes        u     undo",
-    "  gf      FK drill-down        s/S   sort / stack sort",
-    "  gF      filter builder       f     quick filter",
-    "  violet = modified · green = inserted · red = deleted",
-    "",
-    "  ── Analysis ────────────────────────────────────",
-    "  gR  column distributions     gS  column stats",
-    "  gD  diff tables              gE  export clipboard",
-    "  gX  export to file           A   AI SQL (grid)",
-    "",
-    "  ── Files ───────────────────────────────────────",
-    "  /path/to/file.csv   .parquet   .json   .xlsx",
-    "  https://host/data.parquet      (remote via httpfs)",
-    "  :Grip file.csv --write    edit + write back  (g!)",
-    "  :Grip file.csv --watch    auto-refresh on timer",
-    "",
-    "  ── Connect ─────────────────────────────────────",
-    "  postgresql://user:pass@host:5432/dbname",
-    "  mysql://user:pass@host:3306/dbname",
-    "  sqlite:path/to/file.db",
-    "  duckdb:path/to/file.duckdb   duckdb::memory:",
-    "",
-    "  ────────────────────────────────────────────────",
-    "",
-  }
-
-  vim.bo[welcome_buf].modifiable = true
-  vim.api.nvim_buf_set_lines(welcome_buf, 0, -1, false, logo)
-  vim.bo[welcome_buf].modifiable = false
-  vim.bo[welcome_buf].buftype    = "nofile"
-  vim.bo[welcome_buf].modified   = false
-  vim.bo[welcome_buf].filetype   = "grip-welcome"
-
-  -- Syntax highlights for welcome screen: deferred so they survive FileType autocmds
-  local ns_w = vim.api.nvim_create_namespace("grip_welcome")
-  vim.api.nvim_buf_clear_namespace(welcome_buf, ns_w, 0, -1)
-  vim.schedule(function()
-    if not vim.api.nvim_buf_is_valid(welcome_buf) then return end
-    -- Byte-range highlight helper; matches the defaults of the (deprecated)
-    -- add_highlight it replaces: priority 4096, no hl_eol.
-    local function hl_range(row, group, col, end_col)
-      vim.api.nvim_buf_set_extmark(welcome_buf, ns_w, row, col, {
-        end_col = end_col, hl_group = group,
-      })
-    end
-    for i, line in ipairs(logo) do
-      local ln  = i - 1
-      local len = #line
-      if line:sub(3, 8) == "──" then
-        -- Section headers and bottom separator
-        hl_range(ln, "Comment", 0, len)
-      elseif line:sub(3, 5) == "╔" or line:sub(3, 5) == "║" or line:sub(3, 5) == "╚" then
-        -- Logo box lines (╔ ║ ╚)
-        hl_range(ln, "Special", 0, len)
-        local vs = line:find("dadbod-grip", 1, true)
-        if vs then hl_range(ln, "Title", vs - 1, len) end
-      elseif line:find("Editable database", 1, true) then
-        hl_range(ln, "Comment", 0, len)
-      elseif line:find("= modified", 1, true) then
-        -- Color legend: extmark with high priority so it shows above any syntax highlighting
-        local function hl_phrase(phrase, hl)
-          local s, e = line:find(phrase, 1, true)
-          if s then
-            vim.api.nvim_buf_set_extmark(welcome_buf, ns_w, ln, s - 1, {
-              end_col = e, hl_group = hl, priority = 200,
-            })
-          end
-        end
-        hl_phrase("violet = modified", "GripModified")
-        hl_phrase("green = inserted",  "GripInserted")
-        hl_phrase("red = deleted",     "GripDeleted")
-      elseif line:sub(3, 7) == ":Grip" then
-        -- :Grip command examples
-        local s, e = line:find(":Grip%S*")
-        if s then hl_range(ln, "Statement", s - 1, e) end
-        s, e = line:find("%-%-%S+")
-        if s then hl_range(ln, "Identifier", s - 1, e) end
-      elseif line:sub(1, 2) == "  " and line:sub(3, 3) ~= " " and line:sub(3, 3) ~= "" then
-        -- Keymap lines: highlight left key and right key (two-column layout)
-        local _, after = line:match("^  (%S+)()")
-        if after then
-          hl_range(ln, "Identifier", 2, after - 1)
-        end
-        -- Right-column key: consistently at byte 31 (0-indexed). Guard: line must be long
-        -- enough and that position must be non-space (single-column lines are too short).
-        if #line >= 34 and line:sub(32, 32) ~= " " then
-          local rs, re = line:find("%S+", 32)
-          if rs then
-            hl_range(ln, "Identifier", rs - 1, re)
-          end
-        end
-      end
-      -- ·NULL· token: highlight wherever it appears, regardless of which branch fired above
-      local ns, ne = line:find("·NULL·", 1, true)
-      if ns then hl_range(ln, "GripNullStaged", ns - 1, ne) end
-    end
-  end)
-
-  -- Display in current window
+  vim.bo[welcome_buf].buftype = "nofile"
+  vim.bo[welcome_buf].filetype = "grip-welcome"
+  vim.bo[welcome_buf].swapfile = false
   vim.api.nvim_win_set_buf(0, welcome_buf)
+  local km = require("dadbod-grip.keymaps")
+  local rows = require("dadbod-grip.welcome").render(welcome_buf)
+  local first
+  for row in pairs(rows) do first = math.min(first or row, row) end
+  vim.wo.wrap = false
+  vim.wo.number = false
+  vim.wo.relativenumber = false
+  vim.wo.signcolumn = "no"
+  vim.wo.foldcolumn = "0"
+  vim.wo.cursorline = true
+  vim.api.nvim_win_set_cursor(0, { first, 2 })
+  vim.fn.winrestview({ topline = 1, leftcol = 0 })
 
   -- Keymaps
-  local function wmap(key, fn, desc)
-    vim.keymap.set("n", key, fn, { buffer = welcome_buf, silent = true, nowait = true, desc = desc })
+  local function wmap(action, fn, desc)
+    km.bind("welcome", welcome_buf, action, "n", fn, { nowait = true, desc = desc })
   end
+  require("dadbod-grip.keymaps").bind("welcome", welcome_buf, "zoom", "n", function()
+    require("dadbod-grip.zoom").toggle()
+  end)
   local function do_connect()
     require("dadbod-grip.connections").pick()
   end
@@ -1452,21 +1631,21 @@ function M.open_welcome()
     if type(c) ~= "string" or c == "" then c = os.getenv("DATABASE_URL") end
     return (c and c ~= "") and c or nil
   end
-  wmap("q",     function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
-  wmap("<Esc>", function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
-  wmap("gc",    do_connect, "Connect to database")
-  wmap("gC",    do_connect, "Connect to database")
-  wmap("<C-g>", do_connect, "Connect to database")
-  wmap("<CR>",  do_connect, "Connect to database")
-  wmap("go",    function()
+  wmap("welcome_close",     function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
+  wmap("welcome_close_esc", function() pcall(vim.api.nvim_buf_delete, welcome_buf, { force = true }) end, "Close welcome")
+  wmap("welcome_connect",    do_connect, "Connect to database")
+  wmap("connections",    do_connect, "Connect to database")
+  wmap("connections_alt", do_connect, "Connect to database")
+  local function do_tables()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.picker").pick_table(conn, function(t) M.open(t, conn) end)
-  end, "Open table picker")
-  wmap("gb",    function()
+  end
+  wmap("table_picker_go", do_tables, "Open table picker")
+  wmap("schema_browser",    function()
     require("dadbod-grip.schema").toggle(cur_conn())
   end, "Schema browser")
-  wmap("gG", function()
+  wmap("er_diagram", function()
     local conn = cur_conn()
     if not conn then
       vim.notify("ER Diagram: no database connection", vim.log.levels.WARN)
@@ -1474,8 +1653,8 @@ function M.open_welcome()
     end
     require("dadbod-grip.er_diagram").toggle(conn)
   end, "ER diagram")
-  wmap("?",     function() view.show_help() end, "Full keymap help")
-  wmap("A",     function()
+  wmap("help",     function() view.show_help() end, "Full keymap help")
+  wmap("ai",     function()
     local ai = require("dadbod-grip.ai")
     if not ai.is_enabled() then
       vim.notify("AI is disabled. Enable it in setup({ ai = { ... } })", vim.log.levels.INFO)
@@ -1485,25 +1664,26 @@ function M.open_welcome()
   end, "AI SQL assistant")
 
   -- 1-9: surface navigation from welcome screen
-  wmap("1", function()
+  wmap("tab_1", function()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.schema").toggle(conn)
   end, "Schema sidebar")
-  wmap("2", function()
+  local function do_query()
     local conn = cur_conn()
     if conn then
       require("dadbod-grip.query_pad").open(conn)
     else
       do_connect()
     end
-  end, "Query pad")
-  wmap("3", function()
+  end
+  wmap("tab_2", do_query, "Query pad")
+  wmap("tab_3", function()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.picker").pick_table(conn, function(t) M.open(t, conn) end)
   end, "Table picker")
-  wmap("4", function()
+  wmap("tab_4", function()
     local conn = cur_conn()
     if not conn then do_connect(); return end
     require("dadbod-grip.er_diagram").toggle(conn)
@@ -1512,15 +1692,40 @@ function M.open_welcome()
   -- is a float, not a grid view, so it is wired separately above.
   for n = 5, 9 do
     local vname = require("dadbod-grip.keymaps").TAB_VIEWS[n]
-    wmap(tostring(n), function()
+    wmap("tab_" .. n, function()
       local conn = cur_conn()
       if not conn then do_connect(); return end
       require("dadbod-grip.picker").pick_table(conn, function(t) M.open(t, conn, { view = vname }) end)
     end, vname .. " view")
   end
 
+  local actions = {
+    demo = function() vim.cmd("GripStart") end,
+    connect = do_connect,
+    tables = do_tables,
+    query = do_query,
+  }
+  wmap("welcome_activate", function()
+    local action = actions[rows[vim.api.nvim_win_get_cursor(0)[1]]]
+    if action then action() end
+  end, "Run welcome action")
+  local function move_action(direction)
+    local ordered = {}
+    for row in pairs(rows) do ordered[#ordered + 1] = row end
+    table.sort(ordered)
+    local current = vim.api.nvim_win_get_cursor(0)[1]
+    local target = direction > 0 and ordered[1] or ordered[#ordered]
+    for _, row in ipairs(ordered) do
+      if direction > 0 and row > current then target = row; break end
+      if direction < 0 and row < current then target = row end
+    end
+    vim.api.nvim_win_set_cursor(0, { target, 2 })
+  end
+  wmap("welcome_next", function() move_action(1) end, "Next welcome action")
+  wmap("welcome_prev", function() move_action(-1) end, "Previous welcome action")
+
   -- Dev secret: Chonk at the center of the grip vortex
-  wmap(";", function()
+  wmap("welcome_secret", function()
     local secret = {
       "",
       "∿ ∿  dadbod-grip vortex  ∿ ∿",
@@ -2170,36 +2375,43 @@ function M.setup(opts)
       return
     end
     local connections = require("dadbod-grip.connections")
-    connections.switch(demo.url, demo_module.label)
+    connections.switch(demo.url, demo_module.label, nil, { on_ready = function()
+      local md_files = vim.api.nvim_get_runtime_file("demo/softrear-internal.md", false)
+      if #md_files == 0 then return end
+      local qpad = require("dadbod-grip.query_pad")
+      qpad.open(demo.url)
+      local pad = qpad.get_pad_bufnr()
+      if not pad or not vim.api.nvim_buf_is_valid(pad) then return end
+      local lines = vim.fn.readfile(md_files[1])
+      vim.bo[pad].modifiable = true
+      vim.api.nvim_buf_set_lines(pad, 0, -1, false, lines)
+      vim.bo[pad].modified = false
+      for i, line in ipairs(lines) do
+        if line == "```sql" then
+          vim.api.nvim_win_set_cursor(0, { i + 1, 0 })
+          vim.cmd("normal! zt")
+          break
+        end
+      end
+      local run_key = require("dadbod-grip.keymaps").get("qpad_execute")
+      vim.notify(run_key and ("Demo ready: " .. run_key .. " runs this SQL block.")
+        or "Demo ready. Use :GripQuery to edit SQL.", vim.log.levels.INFO)
+    end })
     local attached
     attached, err = demo_module.attach_supplier(demo)
     if not attached then vim.notify("Grip: " .. err, vim.log.levels.WARN) end
     if demo.supplier_error then vim.notify("Grip: " .. demo.supplier_error, vim.log.levels.WARN) end
 
-    -- Load the demo notebook into the query pad.
-    -- Double-schedule: connections.switch opens the pad in its own vim.schedule;
-    -- we need to run after that has completed.
-    vim.schedule(function()
-      vim.schedule(function()
-        local md_files = vim.api.nvim_get_runtime_file("demo/softrear-internal.md", false)
-        if #md_files == 0 then return end
-        local qpad = require("dadbod-grip.query_pad")
-        qpad.open(demo.url)  -- idempotent: ensures _pad_bufnr exists regardless of timing
-        local pad = qpad.get_pad_bufnr()
-        if not pad or not vim.api.nvim_buf_is_valid(pad) then return end
-        local lines = vim.fn.readfile(md_files[1])
-        vim.bo[pad].modifiable = true
-        vim.api.nvim_buf_set_lines(pad, 0, -1, false, lines)
-        vim.bo[pad].modified = false
-        vim.notify("Softrear Inc. Analyst Portal\xe2\x84\xa2  \xc2\xb7  C-CR runs any SQL block", vim.log.levels.INFO)
-      end)
-    end)
   end, { desc = "Open the Softrear Inc. Analyst Portal" })
 
   -- :GripHome: return to the welcome screen from anywhere
   vim.api.nvim_create_user_command("GripHome", function()
     M.open_welcome()
   end, { desc = "Open dadbod-grip welcome screen" })
+
+  vim.api.nvim_create_user_command("GripZoom", function()
+    require("dadbod-grip.zoom").toggle()
+  end, { desc = "Zoom current pane or restore its split layout" })
 
   -- :GripToggle: close all grip windows if visible, reopen if hidden
   vim.api.nvim_create_user_command("GripToggle", function()

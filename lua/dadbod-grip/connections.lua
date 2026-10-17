@@ -743,7 +743,7 @@ end
 --- Switch active connection. Routes file connections through grip.open(),
 --- DB connections through vim.g.db + workspace open.
 --- Auto-saves to .grip/connections.json if not already persisted.
---- opts: { write = bool, watch_ms = number, mode = "ro"|"rw" }: session-only,
+--- opts: { write = bool, watch_ms = number, mode = "ro"|"rw", on_ready = function }: session-only,
 --- never persisted.
 --- @return boolean committed  false when the switch aborted and nothing changed
 function M.switch(url, name, conn_type, opts)
@@ -987,6 +987,10 @@ function M.switch(url, name, conn_type, opts)
     -- After the layout, not before it: fired first, this toast hung alone over
     -- an empty screen for however long the schema took to arrive.
     vim.notify("Grip: connected to " .. label, vim.log.levels.INFO)
+
+    -- A blocking catalog fetch pumps scheduled work. Run dependent setup here,
+    -- after the workspace has finished placing/focusing its panes.
+    if opts and opts.on_ready then opts.on_ready() end
 
     -- Pre-warm completion schema cache in background (avoids freeze on first keypress)
     vim.schedule(function()

@@ -195,6 +195,11 @@ the whole grid by one row every time scrolling crosses that threshold.
 A winbar costs one screen line per grid window; set `sticky_header = false`
 to reclaim it for good (the badges then render as before).
 
+The shortcut hints below the result fit into two rows for each window's text
+width. They use configured keys and stay in place during horizontal table
+scrolling. Narrow windows prioritize core actions and help; `…` marks omitted
+hints when it fits. These rows scroll vertically with the end of the result.
+
 AI SQL generation (optional): >lua
   require("dadbod-grip").setup({
     ai = {
@@ -228,7 +233,7 @@ a binding entirely: >lua
 <
 Action names (stable API) with their defaults:
 
-  Shared across all surfaces ~
+  Persistent actions (surface availability is listed in keymaps.json) ~
   palette          = "<C-p>"   command palette
   help             = "?"       help popup
   er_diagram       = "gG"      ER diagram float
@@ -240,6 +245,16 @@ Action names (stable API) with their defaults:
   load_saved       = "gq"      load saved query
   welcome          = "Q"       welcome / home screen
   schema_browser   = "gb"      schema sidebar (open/focus/close)
+  zoom             = "gz"      zoom current pane / restore split sizes
+
+  Welcome screen ~
+  welcome_activate = "<CR>"    run the selected welcome action
+  welcome_next     = "<Tab>"   next action row
+  welcome_prev     = "<S-Tab>" previous action row
+  welcome_close    = "q"       close welcome
+  welcome_close_esc= "<Esc>"   close welcome with Escape
+  welcome_connect  = "gc"      connection picker
+  welcome_secret   = ";"       existing Chonk cameo
 
   Shared: grid + sidebar ~
   query_pad        = "q"       open query pad
@@ -467,8 +482,38 @@ All commands are global and available after the plugin loads.
 
                                                               *:GripToggle*
 :GripToggle
-  Close all grip windows if any are open, or reopen the last workspace
-  (schema sidebar + query pad) if closed.
+  Delete visible Grip buffers across all tabs, or reconnect to the last
+  connection when no Grip windows are visible. Deleting buffers discards
+  unsaved query text and staged result state without a save prompt. This
+  command is not reversible workspace hiding. Use :GripZoom to make room
+  temporarily, or <Esc> inside the sidebar to close just its window.
+
+                                                                *:GripZoom*
+:GripZoom
+  Maximize the current split window, or restore the saved split sizes in
+  this tab. The default normal-mode key is gz in grids, the query pad, the
+  schema sidebar, and welcome. The command also works in ordinary file/help
+  splits and the full cell-value split; those use :GripZoom without a gz map.
+  No windows are closed and no buffers are copied, replaced, or deleted.
+  Unsaved SQL, staged results, sidebar folds, and native window keys stay
+  available. Other panes remain at Neovim's minimum window size.
+
+  A second toggle restores the original sizes and fixed-size settings.
+  Navigation and edits made while zoomed are retained. After a terminal
+  resize or a split change, surviving panes are equalized around their saved
+  fixed-size settings. Added or rearranged windows stay in place; closed
+  windows are not rebuilt. Closing the zoomed pane also ends its zoom and
+  recovers usable sizes for the remaining panes. Floating panes are not maximized;
+  close their popup first, then zoom the underlying split.
+
+  Opening the query pad while another split is zoomed restores the layout
+  first, so the SQL window is usable. Reopening SQL keeps its zoom when it
+  returns to the same zoomed window. Native window navigation does not change zoom.
+
+  Remap or disable only this shortcut with setup({ keymaps = { zoom = ... } }).
+  Native <C-w>h/j/k/l and <C-w>w still navigate windows. <C-w>= equalizes
+  sizes rather than restoring a saved layout. Avoid :only for temporary
+  zoom: closing a Grip grid wipes its result buffer and staged state.
 
                                                                 *:GripDrop*
 :GripDrop [table]
@@ -562,12 +607,41 @@ All commands are global and available after the plugin loads.
   the disposable supplier database is attached automatically as `supplier`.
   Demo files live under stdpath("data") and never overwrite the current
   project's .grip directory.
+  The pad focuses the first bundled SQL block without executing it. Press
+  <C-CR> to run it, or gb, select rolls, and press Enter to browse a table
+  first. From that table, 2 returns to the walkthrough's SQL pad.
+
+                                                               *grip-demo*
+  Search the notebook for "Daily practice" for a short find -> inspect ->
+  edit -> review -> undo/apply loop. Both engines include incident_summary,
+  a read-only aggregate view. DuckDB also includes reporting.monthly_incidents
+  and the SQL-callable reporting.severity_label macro. The reporting schema
+  folds in the sidebar; macros are not listed as PostgreSQL functions.
+  The bundled demo/README.md describes the separate optional PostgreSQL lab
+  in demo/softrear_postgres.sql. Use a new disposable local database for that
+  lab. It creates nested partitions, a view, and a function without changing
+  roles, grants, extensions, or server settings. GripStart does not seed or
+  connect to PostgreSQL automatically.
 
                                                                 *:GripHome*
 :GripHome
-  Return to the dadbod-grip welcome screen from anywhere. Shows the keymap
-  reference, connection string examples, and navigation shortcuts. Also
-  reachable with Q from any grip buffer.
+  Return to the dadbod-grip welcome screen from anywhere. The DBG logo is
+  followed by actionable rows for the demo, connection picker, table picker,
+  and SQL pad. Tab / Shift-Tab or native j/k selects a row; Enter runs it.
+  Enter on other lines does nothing. Opening welcome does not connect or run
+  SQL. Q also returns here from the grid, query pad, or sidebar.
+
+  Welcome's current defaults remain q/Esc to close, gc/gC/C-g to connect,
+  gb or 1 for schema, go or 3 for tables, 2 for SQL, and ? for local help.
+  The workspace diagram labels these welcome keys. In the SQL pad, 2 opens
+  history; in schema, 1 opens connections. ? shows that pane's actual actions.
+  Existing 4-9 views and the ; Chonk Easter egg remain available. Only the
+  selected row changes Enter's previous connect-anywhere behavior.
+  Welcome and help show effective configured keys and omit disabled keys.
+  With a disabled action, type its global command: GripStart, GripConnect,
+  GripTables, or GripQuery. No alternate keymap preset is implemented.
+  In-app help ends with an About section featuring Chonk's Table Hug drawing.
+  Press G in help to see it, then q or Escape to return to the same pane.
 
 ==============================================================================
 6. KEYBINDINGS                                           *grip-keybindings*
@@ -794,7 +868,18 @@ Multi-level undo: every edit operation pushes the previous state onto a
 history. Press `U` to reset to the original state in one step.
 
 Read-only mode is auto-detected when no primary key exists on the table
-(grip needs PKs for WHERE clauses in UPDATE/DELETE statements).
+(grip needs PKs for WHERE clauses in UPDATE/DELETE statements). SELECT
+projections with column aliases, including unchanged names such as `id AS id`,
+or expressions such as `total * 2` and bare `CURRENT_TIMESTAMP` open read-only.
+Supported direct column references and wildcards remain eligible for editing
+when the normal primary-key requirements are met. This includes unquoted
+Unicode column names and quoted or qualified columns named CURRENT_TIMESTAMP.
+MySQL/MariaDB support backtick and double-quoted identifiers because the
+adapter enables ANSI_QUOTES; executable comments in projections stay read-only.
+PostgreSQL nested comments are skipped when checking columns and locating the
+source table. Qualified columns and wildcards must match that table or its
+alias. Struct projections such as DuckDB's details.* and details.status stay
+read-only because their output names do not identify base-table columns.
 
 Full-buffer cell editor ~
                                                         *grip-cell-buffer*
@@ -909,18 +994,31 @@ to scanning each table's foreign keys once.
 10. SCHEMA BROWSER                                          *grip-schema*
 
 Toggle with `:GripSchema` or `gb` from a grid or query-pad buffer. Opens a
-left sidebar showing all tables and views for the current connection.
+left sidebar showing tables, views, functions, and procedures for the current
+connection. When the adapter supplies schema metadata, schemas start collapsed.
+Objects without schema metadata keep their flat sections, even when other
+objects have known schemas. Missing metadata does not assign an object to
+public or main. PostgreSQL objects always belong to a schema; an unqualified
+display name does not mean the object has no schema.
+
+PostgreSQL declarative partitions appear once beneath their actual parent in a
+separate Partitions group. Nested partitions retain their hierarchy, and
+cross-schema children show their schema. Children whose parent is not visible
+remain at the top level. Traditional inheritance stays flat. Group counts show
+visible direct children; browsing and expanding columns do not count data rows.
+Opening a parent table uses the normal parent query, including its partitions.
+Metadata visibility does not guarantee permission to query every column.
 
 Schema browser keymaps:
-  <CR>            Open table in grid (or open parent table from column)
+  <CR>            Open table/routine, or toggle schema/partition group
   <S-CR>          Open table in new split
-  l / zo          Expand table to show columns
-  h / zc          Collapse table
-  L               Expand all tables
-  H               Collapse all tables
-  /               Filter tables by name
-  n / N           Jump to next / previous table match
-  F               Clear filter
+  l / zo          Expand group or table columns
+  h / zc          Collapse item, or move to its parent
+  L               Expand every schema/partition level; keep existing columns
+  H               Collapse all groups and table columns
+  /               Search hidden names and routine identity signatures
+  n / N           Jump to next / previous visible table or routine
+  F               Clear filter and restore the original folds and view
   r               Refresh schema (re-fetch table list)
   y               Yank table or column name to clipboard
   go              Open table under cursor, ORDER BY latest (created_at / PK DESC)
@@ -936,7 +1034,20 @@ Schema browser keymaps:
   <Esc>           Close sidebar
   ?               Toggle help popup
 
-Columns show type abbreviations (int, text, bool, vc(255), etc.) and
+L and H apply to the whole sidebar. During filtering they change only the
+temporary matching tree. Press F, then L or H, to apply them to the complete
+catalog. Flat root objects remain visible because they have no schema group
+to collapse. Use l/zo on an individual table to load its columns.
+
+Search temporarily reveals matching paths without changing the saved folds.
+Editing a filter keeps the original pre-search view; cancelling leaves the
+active filter and selection unchanged. Functions and procedures retain their
+full identity signatures, and opening a PostgreSQL routine uses its exact OID.
+
+Labels remain complete in the buffer. Use `zh`/`zl` to scroll horizontally,
+`zH`/`zL` for half-window scrolling, or `0`/`$` to reach either end of a label.
+The window edge indicates clipped text. Columns load on explicit table
+expansion and show type abbreviations (int, text, bool, vc(255), etc.) with
 markers for primary keys and foreign keys.
 
 ==============================================================================
@@ -945,8 +1056,9 @@ markers for primary keys and foreign keys.
 Open with `:GripQuery` or `q` from the grid or schema sidebar. Creates a
 persistent scratch SQL buffer with filetype=sql and built-in completion.
 
-Content protection: pressing `q` or `2` focuses the pad without replacing
-anything. Clicking a table in the sidebar or picker appends the new query
+Content protection: `q` or `2` from the grid/sidebar focuses the pad without
+replacing its SQL. Inside the pad, `q` goes to welcome and `2` opens query
+history. Clicking a table in the sidebar or picker appends the new query
 below existing SQL with a blank separator. The pad is only pre-filled when
 it is empty (or contains only the hint comment). Your work is never lost.
 
@@ -961,6 +1073,12 @@ columns from all attached databases appear with schema-qualified names
 Works with nvim-cmp, blink.cmp, or standalone via `<C-Space>`.
 
 Query pad keymaps:
+  q / Q           Go to welcome (q elsewhere opens/focuses this pad)
+  1               Open/focus sidebar (1 inside sidebar opens connections)
+  2               Query history (2 from grid/sidebar opens/focuses this pad)
+  3               Focus grid, or pick a table when none is open
+                  In a grid: return from a detail view to records, or pick
+                  a table when already viewing records.
   <C-CR>          Execute the SQL block under the cursor (normal/insert)
   <C-CR>          Execute visual selection into a grip grid (visual mode)
   <S-CR>      Execute and always open result in a new split (never reuses
@@ -1124,10 +1242,19 @@ If a literal password contains `${WORD}`, write `$${WORD}`: a doubled dollar
 produces the literal text and resolves nothing. The escape is only special
 immediately before `{NAME}`, so `pa$$word` is left alone.
 
-The .env file is parsed for `KEY=value` and `export KEY=value` lines; one
-pair of surrounding quotes is stripped; whole-line `#` comments and blank
-lines are ignored. A `#` inside a value is part of the value, not the start
-of a comment -- a password may legitimately contain one.
+The .env file supports `KEY=value` and `export KEY=value` lines. Whitespace
+outside values and one surrounding quote pair are stripped. Whole-line `#`
+comments and blank lines are ignored. An inline comment starts with whitespace
+followed by `#` outside the quotes, so `KEY="value" # comment` and
+`KEY=value # comment` both produce `value`. A quoted hash or an unspaced hash
+stays literal: `KEY="value # suffix"` and `KEY=value#suffix` retain their hashes.
+
+Values remain literal: backslash escapes and nested ${VAR} text are not decoded
+or expanded, and multiline values and shell expressions are not supported.
+Backslashes only help identify escaped quotes when finding the closing quote.
+An unmatched quote or extra noncomment text after a closing quote is preserved
+verbatim rather than silently truncating a credential. Inline comments require
+separating whitespace, including after a closing quote.
 
 It is read at connect time and memoized on the file's mtime, so a
 rotated password is picked up on the next query. A git-crypt-locked file is
