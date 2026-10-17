@@ -47,6 +47,9 @@ local OPTS = {
   -- visible when a long table scrolls past it. Costs one screen line.
   sticky_header = true,
   open_sidebar = true,
+  show_hints = true,
+  show_running_time = true,
+  show_result_time = true,
 }
 
 --- Return a copy of the current options.
@@ -494,6 +497,7 @@ end
 -- Applies staged changes to a local file by creating a temp table, mutating it,
 -- then COPY TO-ing back to the original path. file_path must be a local path.
 local function do_apply_file_writeback(bufnr, session)
+  local is_current = require("dadbod-grip.write").capture_owner(bufnr, session)
   local st = session.state
   local file_path = session.file_path
   local fmt = filetypes.write_format(file_path)
@@ -564,16 +568,15 @@ local function do_apply_file_writeback(bufnr, session)
   table.insert(stmts, "DROP TABLE _grip_w")
 
   local full_sql = table.concat(stmts, ";\n") .. ";"
-  local t0 = vim.uv.hrtime()
-  local _, err = db.execute(full_sql, "duckdb::memory:")
-  local ms = math.floor((vim.uv.hrtime() - t0) / 1e6)
+  local written, err, ms, unknown = require("dadbod-grip.write").execute(full_sql, "duckdb::memory:", short)
 
   if err then
-    editor.show_error("Write-back failed", {
-      "✗ File not overwritten", "",
-      "  " .. (err:match("[^\n]+") or err), "",
-      "  Your staged changes are preserved.",
-    })
+    local title = unknown and "Write outcome unknown" or "Write-back failed"
+    local err_lines = { "✗ " .. title, "" }
+    for line in err:gmatch("[^\n]+") do table.insert(err_lines, "  " .. line) end
+    table.insert(err_lines, "")
+    table.insert(err_lines, "  Your staged changes are preserved.")
+    editor.show_error(title, err_lines)
     return
   end
 
@@ -589,15 +592,17 @@ local function do_apply_file_writeback(bufnr, session)
   local history = require("dadbod-grip.history")
   history.record({ sql = full_sql, url = "duckdb::memory:", table_name = file_path, type = "writeback", elapsed_ms = ms })
 
-  session.elapsed_ms = ms
-  session.last_action = "writeback"
-  session.on_refresh(bufnr)
+  if is_current() then
+    session.on_refresh(bufnr, { write_elapsed_ms = ms, write_engine_timing = written and written.engine_timing,
+      is_current = is_current })
+  end
 end
 
 -- ── apply staged changes ──────────────────────────────────────────────────
 local function do_apply(bufnr, url)
   local session = view._sessions[bufnr]
   if not session then return end
+  local is_current = require("dadbod-grip.write").capture_owner(bufnr, session)
 
   -- File write-back path: session is a local file opened in write mode
   if session.write_mode and session.file_path
@@ -634,21 +639,32 @@ local function do_apply(bufnr, url)
 
   -- Wrap in transaction for atomicity (all or nothing)
   local txn_sql = sql.wrap_transaction(stmts, require("dadbod-grip.adapters").kind(url))
-  local t_apply = vim.uv.hrtime()
-  local _, err = db.execute(txn_sql, url)
-  local apply_ms = math.floor((vim.uv.hrtime() - t_apply) / 1e6)
+  local written, err, apply_ms, unknown = require("dadbod-grip.write").execute(txn_sql, url, st.table_name)
 
   if err then
-    -- Transaction failed: DB auto-rolled back
-    local err_lines = { "✗ Transaction rolled back (" .. total .. " statement(s))", "" }
+    -- Rollback guarantees differ between engines and statement types.
+    local title = unknown and "Write outcome unknown" or "Apply failed"
+    local err_lines = { "✗ " .. title .. " (" .. total .. " statement(s))", "" }
     for chunk in (err .. "\n"):gmatch("([^\n]+)\n?") do
       if chunk ~= "" then table.insert(err_lines, "  " .. chunk) end
     end
     table.insert(err_lines, "")
     table.insert(err_lines, "  Your changes are preserved. Fix the value or press u to undo.")
-    editor.show_error("Apply failed", err_lines)
+    editor.show_error(title, err_lines)
     return
   end
+
+  -- Report the captured target even if input navigated elsewhere during the write.
+  local parts = {}
+  if #updates > 0 then table.insert(parts, #updates .. " update(s)") end
+  if #deletes > 0 then table.insert(parts, #deletes .. " delete(s)") end
+  if #inserts > 0 then table.insert(parts, #inserts .. " insert(s)") end
+  vim.notify("Applied " .. table.concat(parts, ", ") .. " to " .. (st.table_name or "result"), vim.log.levels.INFO)
+
+  local history = require("dadbod-grip.history")
+  history.record({ sql = txn_sql, url = url, table_name = st.table_name, type = "dml", elapsed_ms = apply_ms })
+
+  if not is_current() then return end
 
   -- Success: compute reverse SQL for transaction undo before clearing staging
   local reverse_stmts = {}
@@ -716,6 +732,9 @@ local function do_apply(bufnr, url)
     end
   end
 
+  -- Auto-assigned-PK lookup above can also yield to navigation/input.
+  if not is_current() then return end
+
   -- Store in transaction undo stack
   if #reverse_stmts > 0 then
     session._txn_undo_stack = session._txn_undo_stack or {}
@@ -726,24 +745,8 @@ local function do_apply(bufnr, url)
   -- Clear local staging undo stack (stale pre-apply states)
   session._undo_stack = {}
 
-  -- Notify, record history, and refresh
-  local parts = {}
-  if #updates > 0 then table.insert(parts, #updates .. " update(s)") end
-  if #deletes > 0 then table.insert(parts, #deletes .. " delete(s)") end
-  if #inserts > 0 then table.insert(parts, #inserts .. " insert(s)") end
-  vim.notify("Applied " .. table.concat(parts, ", "), vim.log.levels.INFO)
-
-  local history = require("dadbod-grip.history")
-  history.record({ sql = txn_sql, url = url, table_name = st.table_name, type = "dml" })
-
-  session.elapsed_ms = apply_ms
-  -- Build action label from what was applied
-  local action_parts = {}
-  if #updates > 0 then table.insert(action_parts, "updated") end
-  if #inserts > 0 then table.insert(action_parts, "inserted") end
-  if #deletes > 0 then table.insert(action_parts, "deleted") end
-  session.last_action = table.concat(action_parts, "+")
-  session.on_refresh(bufnr)
+  session.on_refresh(bufnr, { write_elapsed_ms = apply_ms, write_engine_timing = written and written.engine_timing,
+    is_current = is_current })
 end
 
 -- ── refresh ───────────────────────────────────────────────────────────────
@@ -795,10 +798,11 @@ end
 
 --- Render what fetch_refresh returned. Kept outside the spinner float so the
 --- grid repaints after it is torn down, the same order init.open() uses.
-local function apply_refresh(bufnr, fetched, owner, generation, query_update)
+local function apply_refresh(bufnr, fetched, owner, generation, query_update, write_result)
   local session = view._sessions[bufnr]
   if session ~= owner or not session or not vim.api.nvim_buf_is_valid(bufnr)
       or session._refresh_generation ~= generation then return end
+  if write_result and write_result.is_current and not write_result.is_current() then return end
   if not fetched or not fetched.result then
     vim.notify("Grip: query failed: " .. tostring((fetched and fetched.err) or "unknown error"),
       vim.log.levels.ERROR)
@@ -815,6 +819,10 @@ local function apply_refresh(bufnr, fetched, owner, generation, query_update)
   session.last_action = "query"
   session._query_times[new_state.rows] = fetched.elapsed_ms
   session._query_engine_times[new_state.rows] = fetched.result.engine_timing
+  if write_result then
+    session._write_times[new_state.rows] = write_result.write_elapsed_ms
+    session._write_engine_times[new_state.rows] = write_result.write_engine_timing
+  end
   view.render(bufnr, new_state)
 end
 
@@ -825,13 +833,16 @@ local function begin_refresh(bufnr)
   return session, session._refresh_generation
 end
 
-local function do_refresh(bufnr, url, query_sql, table_name)
+local function do_refresh(bufnr, url, query_sql, table_name, write_result)
   local owner, generation = begin_refresh(bufnr)
   if not owner then return end
+  if write_result then
+    write_result.is_current = require("dadbod-grip.write").capture_owner(bufnr, owner)
+  end
   local fetched = ui.blocking("  querying " .. spinner_label(table_name) .. "...", function()
     return fetch_refresh(url, query_sql, table_name)
   end)
-  apply_refresh(bufnr, fetched, owner, generation)
+  apply_refresh(bufnr, fetched, owner, generation, nil, write_result)
 end
 
 -- ── edit cell ─────────────────────────────────────────────────────────────
@@ -1061,71 +1072,78 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
     preview_sql = preview_sql .. " WHERE " .. where
   end
 
-  -- Run preview query
-  local result, err = db.query(preview_sql, url)
-  if not result then
-    vim.notify("Preview failed: " .. (err or "query error"), vim.log.levels.ERROR)
-    return
-  end
-
-  -- Fetch columns from schema if needed (empty result)
-  if #result.columns == 0 then
-    local col_info = db.get_column_info(table_name, url)
-    if col_info then
-      for _, ci in ipairs(col_info) do table.insert(result.columns, ci.column_name) end
+  local preview = ui.blocking("  previewing " .. spinner_label(table_name) .. "...", function()
+    -- Run preview query
+    local result, err = db.query(preview_sql, url)
+    if not result then
+      return { err = err or "query error" }
     end
-  end
 
-  -- Fetch PKs
-  result.readonly = db.is_readonly(url)
-  local pks = result.readonly and {} or (db.get_primary_keys(table_name, url) or {})
-  result.primary_keys = pks
-  result.table_name = table_name
-  result.url = url
-  result.sql = preview_sql
+    -- Fetch columns from schema if needed (empty result)
+    if #result.columns == 0 then
+      local col_info = db.get_column_info(table_name, url)
+      if col_info then
+        for _, ci in ipairs(col_info) do table.insert(result.columns, ci.column_name) end
+      end
+    end
 
-  local state = data.new(result)
-  local row_count = #result.rows
+    -- Fetch PKs
+    result.readonly = db.is_readonly(url)
+    local pks = result.readonly and {} or (db.get_primary_keys(table_name, url) or {})
+    result.primary_keys = pks
+    result.table_name = table_name
+    result.url = url
+    result.sql = preview_sql
 
-  -- For UPDATE: parse SET clause and pre-stage changes so cells show as blue
-  if stmt_type == "UPDATE" and row_count > 0 then
-    local set_clause = flat:match("[Ss][Ee][Tt]%s+(.-)%s+[Ww][Hh][Ee][Rr][Ee]")
-      or flat:match("[Ss][Ee][Tt]%s+(.-)%s*;?%s*$")
-    if set_clause then
-      -- Parse "col = 'val', col2 = 'val2'" assignments
-      for assignment in set_clause:gmatch("([^,]+)") do
-        local col_raw, val_raw = assignment:match("^%s*(.-)%s*=%s*(.-)%s*$")
-        if col_raw and val_raw then
-          -- Strip quotes from column name
-          local col = col_raw:match('^"([^"]+)"$') or col_raw:match("^`([^`]+)`$") or col_raw:match("^%s*(%S+)%s*$")
-          -- Strip quotes from value
-          local val = val_raw:match("^'(.-)'$") or val_raw:match('^"(.-)"$') or val_raw
-          if col and val then
-            -- Apply as staged change to every row
-            for row_idx = 1, #state.rows do
-              state = data.add_change(state, row_idx, col, val)
+    local state = data.new(result)
+    local row_count = #result.rows
+
+    -- For UPDATE: parse SET clause and pre-stage changes so cells show as blue
+    if stmt_type == "UPDATE" and row_count > 0 then
+      local set_clause = flat:match("[Ss][Ee][Tt]%s+(.-)%s+[Ww][Hh][Ee][Rr][Ee]")
+        or flat:match("[Ss][Ee][Tt]%s+(.-)%s*;?%s*$")
+      if set_clause then
+        -- Parse "col = 'val', col2 = 'val2'" assignments
+        for assignment in set_clause:gmatch("([^,]+)") do
+          local col_raw, val_raw = assignment:match("^%s*(.-)%s*=%s*(.-)%s*$")
+          if col_raw and val_raw then
+            -- Strip quotes from column name
+            local col = col_raw:match('^"([^"]+)"$') or col_raw:match("^`([^`]+)`$") or col_raw:match("^%s*(%S+)%s*$")
+            -- Strip quotes from value
+            local val = val_raw:match("^'(.-)'$") or val_raw:match('^"(.-)"$') or val_raw
+            if col and val then
+              -- Apply as staged change to every row
+              for row_idx = 1, #state.rows do
+                state = data.add_change(state, row_idx, col, val)
+              end
             end
           end
         end
       end
     end
-  end
 
-  -- For DELETE: mark all rows as deleted so they show red
-  if stmt_type == "DELETE" and row_count > 0 then
-    for row_idx = 1, #state.rows do
-      state = data.toggle_delete(state, row_idx)
+    -- For DELETE: mark all rows as deleted so they show red
+    if stmt_type == "DELETE" and row_count > 0 then
+      for row_idx = 1, #state.rows do
+        state = data.toggle_delete(state, row_idx)
+      end
     end
-  end
 
-  -- For INSERT with VALUES: parse and add new rows highlighted green
-  if stmt_type == "INSERT" then
-    local insert_rows = parse_insert_values(flat, result.columns)
-    for _, row_values in ipairs(insert_rows) do
-      state = data.insert_row_with_values(state, #result.rows, row_values)
+    -- For INSERT with VALUES: parse and add new rows highlighted green
+    if stmt_type == "INSERT" then
+      local insert_rows = parse_insert_values(flat, result.columns)
+      for _, row_values in ipairs(insert_rows) do
+        state = data.insert_row_with_values(state, #result.rows, row_values)
+      end
+      row_count = #insert_rows  -- count = rows being inserted, not existing rows
     end
-    row_count = #insert_rows  -- count = rows being inserted, not existing rows
+    return { state = state, row_count = row_count }
+  end)
+  if preview.err then
+    vim.notify("Preview failed: " .. preview.err, vim.log.levels.ERROR)
+    return
   end
+  local state, row_count = preview.state, preview.row_count
 
   -- Open grid with pending_mutation metadata
   local reuse_win = caller_opts and caller_opts.reuse_win
@@ -1162,8 +1180,8 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
 
     -- Wire refresh callback so grid updates after mutation executes
     view.set_callbacks(bufnr, {
-      on_refresh = function(bid)
-        do_refresh(bid, url, preview_sql, table_name)
+      on_refresh = function(bid, write_result)
+        do_refresh(bid, url, preview_sql, table_name, write_result)
       end,
     })
 
@@ -1234,9 +1252,7 @@ function M.open(arg, url, opts)
     local choice = vim.fn.confirm(label .. "\n\n" .. mutation_sql:sub(1, 200), "&Execute\n&Cancel", 2)
     if choice ~= 1 then return end
 
-    local t0 = vim.uv.hrtime()
-    local _, exec_err = db.execute(mutation_sql, exec_conn)
-    local ms = math.floor((vim.uv.hrtime() - t0) / 1e6)
+    local _, exec_err, ms = require("dadbod-grip.write").execute(mutation_sql, exec_conn, stmt_type)
     if exec_err then
       vim.notify("Grip: " .. exec_err, vim.log.levels.ERROR)
     else
@@ -1303,6 +1319,7 @@ function M.open(arg, url, opts)
   end)
 
   local result = fetched.result
+  if opts and opts.write_is_current and not opts.write_is_current() then return end
   if not result then
     vim.notify("Grip: " .. (fetched.err or "query failed"), vim.log.levels.ERROR)
     return
@@ -1325,6 +1342,8 @@ function M.open(arg, url, opts)
     query_spec    = spec,
     total_rows    = total_rows,
   }, opts or {})
+  -- The guard only owns this reload; do not retain the old session on the new one.
+  view_opts.write_is_current = nil
   local bufnr = view.open(state, conn, query_sql, view_opts)
 
   -- Auto-sync query pad with the current grid query (passive background update).
@@ -1363,13 +1382,13 @@ function M.open(arg, url, opts)
 
   -- Wire callbacks
   view.set_callbacks(bufnr, {
-    on_refresh = function(bid)
+    on_refresh = function(bid, write_result)
       local s = view._sessions[bid]
       if not s then return end
       -- Read current table name from session state (may have been updated by rename)
       local current_table = (s.state and s.state.table_name) or table_name_arg
       local sql_str = s.query_spec and query.build_sql(s.query_spec) or query_sql
-      do_refresh(bid, conn, sql_str, current_table)
+      do_refresh(bid, conn, sql_str, current_table, write_result)
     end,
     on_requery = function(bid, new_spec)
       local s, generation = begin_refresh(bid)
@@ -1829,6 +1848,9 @@ end
 ---@field border? string|table   Float window border style (default: "rounded")
 ---@field cell_split? string     Cell buffer (gB) split style: "horizontal"|"vertical"
 ---@field open_sidebar? boolean  Open the schema sidebar on connection (default: true)
+---@field show_running_time? boolean Show elapsed time in the loading float (default: true)
+---@field show_result_time? boolean Show retained query/action durations (default: true)
+---@field show_hints? boolean Show automatic shortcut help (default: true)
 
 ---Setup dadbod-grip with user options.
 ---@param opts? DadbodGripOpts
@@ -1856,6 +1878,9 @@ function M.setup(opts)
     discovery     = { opts.discovery, "boolean", true },
     sticky_header = { opts.sticky_header, "boolean", true },
     open_sidebar  = { opts.open_sidebar,  "boolean", true },
+    show_running_time = { opts.show_running_time, "boolean", true },
+    show_result_time  = { opts.show_result_time,  "boolean", true },
+    show_hints        = { opts.show_hints,        "boolean", true },
   })
   OPTS.limit        = opts.limit        or 100
   OPTS.max_col_width = opts.max_col_width or 40
@@ -1870,6 +1895,9 @@ function M.setup(opts)
   if opts.discovery ~= nil then OPTS.discovery = opts.discovery end
   if opts.sticky_header ~= nil then OPTS.sticky_header = opts.sticky_header end
   OPTS.open_sidebar = opts.open_sidebar ~= false
+  if opts.show_running_time ~= nil then OPTS.show_running_time = opts.show_running_time end
+  if opts.show_result_time ~= nil then OPTS.show_result_time = opts.show_result_time end
+  if opts.show_hints ~= nil then OPTS.show_hints = opts.show_hints end
 
   -- Keymap overrides: stored at module level for keymaps.get() to read.
   if opts.keymaps then
@@ -2213,12 +2241,13 @@ function M.setup(opts)
       local sql_mod = require("dadbod-grip.sql")
       local ddl_sql = string.format('ALTER TABLE %s RENAME COLUMN %s TO %s',
         sql_mod.quote_ident(table_name), sql_mod.quote_ident(old_name), sql_mod.quote_ident(new_name))
-      local _, err = db.execute(ddl_sql, url)
+      local is_current = require("dadbod-grip.write").capture_owner(bufnr, session)
+      local _, err, _, unknown = require("dadbod-grip.write").execute(ddl_sql, url, "rename column")
       if err then
-        vim.notify("Rename failed: " .. err, vim.log.levels.ERROR)
+        vim.notify((unknown and "" or "Rename failed: ") .. err, vim.log.levels.ERROR)
       else
         vim.notify("Renamed " .. old_name .. " to " .. new_name, vim.log.levels.INFO)
-        if session.on_refresh then session.on_refresh(bufnr) end
+        if is_current() and session.on_refresh then session.on_refresh(bufnr) end
       end
     elseif #args == 1 then
       ddl_mod.rename_column(table_name, args[1], url, function()
@@ -2428,6 +2457,30 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("GripZoom", function()
     require("dadbod-grip.zoom").toggle()
   end, { desc = "Zoom current pane or restore its split layout" })
+
+  vim.api.nvim_create_user_command("GripZen", function()
+    local windows = {}
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      windows[win] = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+    end
+    OPTS.show_hints = not OPTS.show_hints
+    for buf, session in pairs(view._sessions) do
+      if vim.api.nvim_buf_is_valid(buf) then view.render(buf, session.state) end
+    end
+    require("dadbod-grip.query_pad").refresh_hints()
+    require("dadbod-grip.schema").redraw()
+    for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(buf) and vim.api.nvim_buf_get_name(buf) == "grip://welcome" then
+        require("dadbod-grip.welcome").render(buf)
+      end
+    end
+    for win, saved in pairs(windows) do
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_call(win, function() vim.fn.winrestview(saved) end)
+      end
+    end
+    vim.cmd("redraw")
+  end, { desc = "Toggle automatic Grip shortcut hints for this session" })
 
   -- :GripToggle: close all grip windows if visible, reopen if hidden
   vim.api.nvim_create_user_command("GripToggle", function()

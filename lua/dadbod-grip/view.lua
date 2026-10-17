@@ -497,8 +497,8 @@ local function title_line(session, columns, widths, total_width)
   -- If still too wide (e.g. available <= 4: very narrow grid), show gH hint if it fits
   if title_dw > available then
     if inner >= 4 then
-      title = " gH "
-      title_dw = 4
+      title = require("dadbod-grip").get_opts().show_hints and " gH " or truncate_display(base_name, inner)
+      title_dw = vim.fn.strdisplaywidth(title)
     else
       title = ""
       title_dw = 0
@@ -513,7 +513,7 @@ end
 
 -- ── main render ──────────────────────────────────────────────────────────
 -- Returns {lines=[], extmarks=[{row, col, end_col, hl_group}]}
-local function build_render(session, opts)
+local function build_render(session, opts, bufnr)
   local configured_max = (opts and opts.max_col_width) or MAX_COL_WIDTH
   local st = session.state
   local hidden = session.hidden_columns or {}
@@ -759,6 +759,8 @@ local function build_render(session, opts)
   -- ── Status line ──
   local staged_count = data.count_staged(st)
   local status_parts = {}
+  local display_opts = require("dadbod-grip").get_opts()
+  local show_result_time, show_hints = display_opts.show_result_time, display_opts.show_hints
 
   -- Row/page info
   if session.query_spec and session.total_rows then
@@ -766,7 +768,7 @@ local function build_render(session, opts)
     -- Directional hints when result spans multiple pages
     local spec = session.query_spec
     local total_pages = math.max(1, math.ceil(session.total_rows / spec.page_size))
-    if total_pages > 1 then
+    if show_hints and total_pages > 1 then
       local nav = {}
       if spec.page > 1 then nav[#nav + 1] = "H←" end
       if spec.page < total_pages then nav[#nav + 1] = "→L" end
@@ -777,7 +779,7 @@ local function build_render(session, opts)
     local row_str = #st.rows .. " rows"
     -- Safety hint: if result maxed out page_size, more data likely exists
     if session.query_spec and #st.rows >= session.query_spec.page_size then
-      row_str = row_str .. "  →L?"
+      row_str = row_str .. (show_hints and "  →L?" or " (more possible)")
     end
     table.insert(status_parts, row_str)
   end
@@ -785,8 +787,15 @@ local function build_render(session, opts)
   local timing_str
   if session.elapsed_ms and session.last_action and session.last_action ~= "query" then
     local action = session.last_action
-    timing_str = session.elapsed_ms .. "ms " .. action
+    timing_str = show_result_time and (session.elapsed_ms .. "ms " .. action) or action
     table.insert(status_parts, timing_str)
+  end
+  local write_ms = session._write_times and session._write_times[st.rows]
+  local write_str
+  if write_ms ~= nil and show_result_time then
+    local duration = write_ms < 1000 and (write_ms .. "ms") or ui.format_elapsed(write_ms)
+    write_str = "Write: " .. duration .. " client"
+    table.insert(status_parts, write_str)
   end
   if staged_count > 0 then table.insert(status_parts, staged_count .. " staged") end
   if st.readonly and not is_editable(session) then table.insert(status_parts, "read-only") end
@@ -797,9 +806,34 @@ local function build_render(session, opts)
   if hidden_n > 0 then table.insert(status_parts, hidden_n .. " hidden") end
 
   local status_str = " " .. table.concat(status_parts, "  │  ")
+  local status_row = #lines
+  local status_items
+  if not show_hints then
+    status_items = {}
+    local function essential(text, hl) status_items[#status_items + 1] = {text, hl} end
+    if staged_count > 0 then essential(staged_count .. " staged", "GripStatusChg") end
+    if st.readonly and not is_editable(session) then essential("read-only", "GripReadonly") end
+    if hidden_n > 0 then essential(hidden_n .. " hidden", "GripReadonly") end
+    if session.query_spec and session.total_rows then
+      essential(string.format("Page %d/%d", session.query_spec.page,
+        math.max(1, math.ceil(session.total_rows / session.query_spec.page_size))))
+      essential(session.total_rows .. " rows")
+    else
+      essential(status_parts[1])
+    end
+    if timing_str then essential(timing_str, "GripBoolTrue") end
+    if write_str then essential(write_str, "GripBoolTrue") end
+  end
+  local status_rows = 1
   table.insert(lines, status_str)
+  if status_items then
+    local footer = require("dadbod-grip.result_hints")
+    local rows = footer.status(status_items, footer.status_width(bufnr))
+    status_rows = #rows
+    for _ = 2, status_rows do table.insert(lines, "") end
+  end
   -- Highlight timing badge: query=yellow, applied=green
-  if timing_str then
+  if timing_str and not status_items then
     local ts, te = status_str:find(timing_str, 1, true)
     if ts then
       local action = session.last_action or "query"
@@ -808,7 +842,7 @@ local function build_render(session, opts)
     end
   end
   -- Highlight "N staged" segment in GripStatusChg color
-  if staged_count > 0 then
+  if staged_count > 0 and not status_items then
     local staged_text = staged_count .. " staged"
     local s, e = status_str:find(staged_text, 1, true)
     if s then push_mark(#lines, s - 1, e, "GripStatusChg") end
@@ -819,7 +853,7 @@ local function build_render(session, opts)
   -- original rows. Weak keys keep only durations whose results are still held.
   local query_elapsed_ms = session._query_times and session._query_times[st.rows]
   local query_time_row
-  if query_elapsed_ms ~= nil then
+  if show_result_time and query_elapsed_ms ~= nil then
     query_time_row = #lines
     table.insert(lines, require("dadbod-grip.result_hints").query_time(query_elapsed_ms, math.huge))
   end
@@ -843,6 +877,7 @@ local function build_render(session, opts)
   -- Resolve configured bindings outside redraw; only packing varies per window.
   local km, hints = require("dadbod-grip.keymaps"), {}
   local function add(action, label, prefix)
+    if not show_hints then return end
     local key = km.get(action)
     if key then
       key = vim.fn.keytrans(vim.api.nvim_replace_termcodes(key, true, true, true))
@@ -874,12 +909,15 @@ local function build_render(session, opts)
     add("grid_clone", "clone"); add("grid_delete", "delete"); add("load_saved", "saved")
     add("ai", "ai"); add("grid_pin", "pin"); add("grid_results", "switch"); views()
   end
-  local hint_row = #lines
-  table.insert(lines, "")
-  table.insert(lines, "")
+  local hint_row
+  if show_hints then
+    hint_row = #lines
+    table.insert(lines, "")
+    table.insert(lines, "")
+  end
 
   local data_start = has_type_row and 5 or 4
-  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {}, query_time_row = query_time_row, query_elapsed_ms = query_elapsed_ms, engine_time_row = engine_time_row, engine_timing = engine }
+  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {}, query_time_row = query_time_row, query_elapsed_ms = query_elapsed_ms, engine_time_row = engine_time_row, engine_timing = engine, status_row = status_row, status_items = status_items, status_rows = status_rows }
 end
 
 -- ── namespace for extmarks ───────────────────────────────────────────────
@@ -927,7 +965,7 @@ function M.render(bufnr, state)
 
   local opts = session.opts or {}
   local rendered = profile("build_render", function()
-    return build_render(session, opts)
+    return build_render(session, opts, bufnr)
   end)
   session._render = rendered  -- cache for get_cell
   session._col_hl = nil       -- column-highlight memo belongs to the old render
@@ -1425,6 +1463,10 @@ function M.open(state, url, query_sql, opts)
     _query_times = setmetatable(opts and opts.elapsed_ms ~= nil and { [state.rows] = opts.elapsed_ms } or {},
       { __mode = "k" }),
     _query_engine_times = setmetatable(opts and opts.engine_timing and { [state.rows] = opts.engine_timing } or {},
+      { __mode = "k" }),
+    _write_times = setmetatable(opts and opts.write_elapsed_ms ~= nil and { [state.rows] = opts.write_elapsed_ms } or {},
+      { __mode = "k" }),
+    _write_engine_times = setmetatable(opts and opts.write_engine_timing and { [state.rows] = opts.write_engine_timing } or {},
       { __mode = "k" }),
     write_mode = (opts and opts.write == true) and true or false,
     pinned = false,

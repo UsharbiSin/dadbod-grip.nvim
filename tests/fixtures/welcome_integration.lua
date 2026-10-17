@@ -150,7 +150,12 @@ return function(scenario)
   elseif scenario:match("^pad%-hints") then
     qpad.open("sqlite:tests/seed_sqlite.db")
     local b = qpad.get_pad_bufnr()
-    local hints = text(b)
+    vim.cmd("redraw!")
+    local info, hints = vim.fn.getwininfo(vim.api.nvim_get_current_win())[1], ""
+    for row = info.winrow, info.winrow + info.height - 1 do
+      for col = info.wincol, info.wincol + info.width - 1 do hints = hints .. vim.fn.screenstring(row, col) end
+      hints = hints .. "\n"
+    end
     assert(not hints:find("C-CR", 1, true), "SQL-pad hint advertises old/disabled execution key")
     if scenario == "pad-hints-remap" then assert(hints:find("<F9>", 1, true), "configured run hint absent") end
     assert(not qpad._has_real_content(vim.api.nvim_buf_get_lines(b, 0, -1, false)), "owned hints block initial SQL")
