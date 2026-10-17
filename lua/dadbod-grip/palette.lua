@@ -81,7 +81,7 @@ local function _build_actions()
 
     -- ── Query pad ─────────────────────────────────────────────────────────
     act("[query]    Open query pad",         k("query_pad"),        "Open query editor (pre-filled with current SQL)",             { "grid", "sidebar" }),
-    act("[query]    Execute SQL",            k("qpad_execute"),     "Run the full query buffer",                                   { "query" }),
+    act("[query]    Execute SQL",            k("qpad_execute"),     "Run the cursor's SQL block or selected lines",                 { "query" }),
     act("[query]    Save query",             k("qpad_save"),        "Save current buffer as a named query",                        { "query" }),
     act("[query]    AI SQL generation",      k("qpad_ai"),          "Generate SQL from a plain-English description",               { "query" }),
     act("[query]    Jump to grid",           k("goto_grid"),        "Focus the grid window",                                       { "query" }),

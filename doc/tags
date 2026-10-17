@@ -10,6 +10,7 @@
 :GripExport	dadbod-grip.txt	/*:GripExport*
 :GripFill	dadbod-grip.txt	/*:GripFill*
 :GripHome	dadbod-grip.txt	/*:GripHome*
+:GripImport	dadbod-grip.txt	/*:GripImport*
 :GripLoad	dadbod-grip.txt	/*:GripLoad*
 :GripOpen	dadbod-grip.txt	/*:GripOpen*
 :GripProfile	dadbod-grip.txt	/*:GripProfile*
@@ -21,6 +22,7 @@
 :GripStart	dadbod-grip.txt	/*:GripStart*
 :GripTables	dadbod-grip.txt	/*:GripTables*
 :GripToggle	dadbod-grip.txt	/*:GripToggle*
+:GripZoom	dadbod-grip.txt	/*:GripZoom*
 dadbod-grip.txt	dadbod-grip.txt	/*dadbod-grip.txt*
 grip-accent	dadbod-grip.txt	/*grip-accent*
 grip-adapters	dadbod-grip.txt	/*grip-adapters*
