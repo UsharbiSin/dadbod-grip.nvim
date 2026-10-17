@@ -189,7 +189,7 @@ test("demo walkthrough uses cataloged keys and current data-source behavior", fu
     grid_sort_stack = "`%s` to stack",
     grid_col_stats = "`%s` shows severity statistics",
     grid_filter_cell = "Press `%s` on a",
-    grid_edit = "with `%s`, navigate",
+    grid_edit = "with `%s`, and",
     grid_row_view = "Press `%s` on any row",
     grid_explain = "Press `%s` to inspect the query plan",
     grid_fk_follow = "Press `%s` on any FK column",
@@ -271,7 +271,7 @@ end)
 
 test("release version has matching changelog notes", function()
   local version = require("dadbod-grip.version")
-  assert(version == "3.14.0", "unexpected release version: " .. tostring(version))
+  assert(version == "3.15.0", "unexpected release version: " .. tostring(version))
   assert(changelog:find("## [" .. version .. "] - 2026-10-17", 1, true),
     "changelog section missing for " .. version)
 end)

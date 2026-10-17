@@ -597,6 +597,18 @@ All commands are global and available after the plugin loads.
   <C-CR> to run it, or gb, select rolls, and press Enter to browse a table
   first. From that table, 2 returns to the walkthrough's SQL pad.
 
+                                                               *grip-demo*
+  Search the notebook for "Daily practice" for a short find -> inspect ->
+  edit -> review -> undo/apply loop. Both engines include incident_summary,
+  a read-only aggregate view. DuckDB also includes reporting.monthly_incidents
+  and the SQL-callable reporting.severity_label macro. The reporting schema
+  folds in the sidebar; macros are not listed as PostgreSQL functions.
+  The bundled demo/README.md describes the separate optional PostgreSQL lab
+  in demo/softrear_postgres.sql. Use a new disposable local database for that
+  lab. It creates nested partitions, a view, and a function without changing
+  roles, grants, extensions, or server settings. GripStart does not seed or
+  connect to PostgreSQL automatically.
+
                                                                 *:GripHome*
 :GripHome
   Return to the dadbod-grip welcome screen from anywhere. The DBG logo is
