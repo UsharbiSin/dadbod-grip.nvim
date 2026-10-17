@@ -4,7 +4,7 @@ Author:   Jory Pestorious
 License:  MIT
 Requires: Neovim 0.10+
 
-=======================================================================
+==============================================================================
 CONTENTS                                                    *grip-contents*
 
   1. Introduction .............. |grip-introduction|
@@ -33,7 +33,7 @@ CONTENTS                                                    *grip-contents*
   24. S3 and Remote Files ....... |grip-s3-files|
   25. Health Check .............. |grip-health|
 
-=======================================================================
+==============================================================================
 1. INTRODUCTION                                          *grip-introduction*
 
 dadbod-grip.nvim is a database client for Neovim with support for
@@ -52,7 +52,7 @@ Quick start: >
   :GripQuery                    open a SQL scratch pad
 <
 
-=======================================================================
+==============================================================================
 2. REQUIREMENTS                                          *grip-requirements*
 
 - Neovim 0.10 or later
@@ -64,7 +64,7 @@ Quick start: >
   DuckDB ............. duckdb
   SQL Server ......... sqlcmd (read-only grid support in v1)
 
-=======================================================================
+==============================================================================
 3. INSTALLATION                                              *grip-install*
 
 lazy.nvim (recommended): >lua
@@ -110,7 +110,7 @@ packer.nvim: >lua
   }
 <
 
-=======================================================================
+==============================================================================
 4. CONFIGURATION                                              *grip-config*
 
 setup() is called automatically by the plugin loader with sensible defaults.
@@ -155,7 +155,8 @@ Set `show_running_time = false` to hide its elapsed number while keeping the
 animated loading indicator and operation label. It resets for the next
 operation. Long labels shorten to keep the elapsed time visible. The counter
 measures waiting; it does not report database progress or identify a hung query.
-CLI timeouts apply separately to each call, so a multi-step operation may take longer.
+CLI timeouts apply separately to each call, so a multi-step operation may take
+longer.
 After a successful query, the results footer keeps its client-observed
 round-trip, such as "Query: 3.4s client" or "Query: 17ms client". This duration
 measures db.query, including the client process and result parsing. It excludes
@@ -183,8 +184,8 @@ Grip reports the database outcome as unknown for interrupted/timed-out client
 waits. Refresh and check the database before retrying. If you navigate or edit
 while a write waits, its completion keeps your newer view and staging intact.
 
-Set `show_result_time = false` to hide retained Query, Write, and action durations in
-the result grid. Completed action status, errors, row counts, and pagination
+Set `show_result_time = false` to hide retained Query, Write, and action
+durations in the result grid. Completed action status, errors, row counts, and pagination
 remain visible. This option and `show_running_time` are independent and both
 default to true. They control display only: queries and actions are still
 timed, and history keeps its durations. Neither setting changes key hints,
@@ -408,7 +409,7 @@ Action names (stable API) with their defaults:
 
 No default keymaps are set outside the grip buffer.
 
-=======================================================================
+==============================================================================
 5. COMMANDS                                                 *grip-commands*
 
 All commands are global and available after the plugin loads.
@@ -679,7 +680,7 @@ All commands are global and available after the plugin loads.
   In-app help ends with an About section featuring Chonk's Table Hug drawing.
   Press G in help to see it, then q or Escape to return to the same pane.
 
-=======================================================================
+==============================================================================
 6. KEYBINDINGS                                           *grip-keybindings*
 
 All keybindings are buffer-local to the grip grid. Press ? for in-buffer
@@ -877,7 +878,7 @@ ADVANCED ~
   :q              Close grip buffer
   ?               Show help
 
-=======================================================================
+==============================================================================
 7. EDITING                                          *grip-editing-workflow*
 
 Grip uses a staging model for edits. Changes are staged in memory and
@@ -967,7 +968,7 @@ documents with 20 or fewer leaves open fully expanded.
 `gK` also works inside the `K` row view: press it on any line to drill
 into that column's JSON value. Non-JSON cells notify "Not a JSON cell".
 
-=======================================================================
+==============================================================================
 8. SORT, FILTER, PAGINATE                           *grip-sort-filter-page*
 
 Sort ~
@@ -1001,7 +1002,7 @@ or `]P`/`[P` to jump to the last/first page.
 
 Press `X` to reset all sort, filter, and pagination state at once.
 
-=======================================================================
+==============================================================================
 9. FOREIGN KEY NAVIGATION                               *grip-fk-nav-full*
 
 Press `gf` on a cell that contains a foreign key value to navigate to the
@@ -1026,7 +1027,7 @@ MySQL, DuckDB), PRAGMA foreign_key_list (SQLite) or sys.foreign_keys
 cached per session; adapters without a native reverse query fall back
 to scanning each table's foreign keys once.
 
-=======================================================================
+==============================================================================
 10. SCHEMA BROWSER                                          *grip-schema*
 
 Toggle with `:GripSchema` or `gb` from a grid or query-pad buffer. Opens a
@@ -1086,7 +1087,7 @@ The window edge indicates clipped text. Columns load on explicit table
 expansion and show type abbreviations (int, text, bool, vc(255), etc.) with
 markers for primary keys and foreign keys.
 
-=======================================================================
+==============================================================================
 11. QUERY PAD                                             *grip-query-pad*
 
 Open with `:GripQuery` or `q` from the grid or schema sidebar. Creates a
@@ -1133,7 +1134,7 @@ Query pad keymaps:
   gb              Schema browser (focus if open; close from inside)
   gC / <C-g>      Switch database connection
 
-=======================================================================
+==============================================================================
 12. SAVED QUERIES                                      *grip-saved-queries*
 
 Save queries to project-local .grip/queries/ directory:
@@ -1145,7 +1146,7 @@ Save queries to project-local .grip/queries/ directory:
 The project root is detected by walking up from the current directory
 looking for .git or .grip directories.
 
-=======================================================================
+==============================================================================
 13. CONNECTIONS                                          *grip-connections*
 
 `:GripConnect` manages database connections from multiple sources:
@@ -1390,7 +1391,7 @@ they are redefined rather than merged, defining any of them yourself in your
 config will not stick -- this is unchanged from how grip's other groups have
 always behaved.
 
-=======================================================================
+==============================================================================
 14. EXPORT                                                   *grip-export*
 
 Press `gE` in a grid and first choose Current page or All matching rows,
@@ -1423,7 +1424,7 @@ Additional yank commands:
   Y ................ Yank entire row as CSV
   gY ............... Yank entire table as CSV
 
-=======================================================================
+==============================================================================
 15. SCHEMA OPERATIONS                                            *grip-ddl*
 
 Table properties ~
@@ -1459,7 +1460,7 @@ Run `:GripDrop` or press `D` in the schema browser. Checks for foreign
 key dependents and offers CASCADE if they exist. Requires typing the
 table name to confirm.
 
-=======================================================================
+==============================================================================
 16. ADAPTERS                                              *grip-adapters*
 
 Grip supports five database adapters. The adapter is selected automatically
@@ -1506,7 +1507,7 @@ DuckDB federation: attach external databases via :GripAttach. Supports
 PostgreSQL (postgres_scanner), MySQL/MariaDB (mysql_scanner), SQLite
 (sqlite_scanner), and MotherDuck. See |grip-federation| for details.
 
-=======================================================================
+==============================================================================
 17. PUBLIC API                                                  *grip-api*
 
                                                           *grip.setup()*
@@ -1541,7 +1542,7 @@ grip.open_smart()
     - dbout result buffer: traces back to source table
     - Normal buffer: uses word under cursor as table name
 
-=======================================================================
+==============================================================================
 18. QUERY HISTORY                                            *grip-history*
 
 Every query executed through :Grip, the query pad, and staged DML is
@@ -1555,7 +1556,7 @@ opens it in the query pad for review and re-execution.
 History is stored per-project (relative to .grip/ directory) and grows
 as an append-only JSONL file.
 
-=======================================================================
+==============================================================================
 19. DATA DIFF                                                    *grip-diff*
 
 Compare two tables row-by-row using primary keys with `:GripDiff`.
@@ -1577,7 +1578,7 @@ Diff keymaps:
 Auto-selects compact mode on narrow terminals (<120 columns). Compact
 mode shows changes in a stacked format; wide mode shows side-by-side.
 
-=======================================================================
+==============================================================================
 20. TABLE PROFILING                                          *grip-profiling*
 
 Profile table columns with `:GripProfile` or `gR` from a grid buffer.
@@ -1595,7 +1596,7 @@ wide terminals get a tabular layout.
 Profiling keymaps:
   q / <Esc>       Close profile float
 
-=======================================================================
+==============================================================================
 21. QUERY DOCTOR                                        *grip-explain-full*
 
 The Query Doctor translates raw EXPLAIN plans into plain-English health
@@ -1619,7 +1620,7 @@ Works across all five adapters:
   - SQLite: EXPLAIN QUERY PLAN operations
   - SQL Server: SHOWPLAN_TEXT operator tree, no cost estimates
 
-=======================================================================
+==============================================================================
 22. AI SQL GENERATION                                             *grip-ai*
 
 Generate SQL from natural language with :GripAsk, `A` from a grid, or `gA`
@@ -1649,7 +1650,7 @@ To disable AI entirely (skips schema pre-warm on connection open): >lua
 <
 Pressing A or gA while AI is disabled shows an informational message.
 
-=======================================================================
+==============================================================================
 23. CROSS-DB FEDERATION                                    *grip-federation*
 
 DuckDB can attach external databases and query across them in a single
@@ -1691,7 +1692,7 @@ Sidebar keymaps for federation (DuckDB connections only):
   ga              Attach external database (prompts for DSN and alias)
   gd              Detach attached database (prompts for alias)
 
-=======================================================================
+==============================================================================
 24. S3 AND REMOTE FILES                                       *grip-s3-files*
 
 DuckDB can query remote files directly via the httpfs extension.
@@ -1723,7 +1724,7 @@ For S3 access, set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in your
 environment. Public buckets work without credentials.
 DuckDB's httpfs extension installs automatically on first use.
 
-=======================================================================
+==============================================================================
 25. HEALTH CHECK                                              *grip-health*
 
 Run the built-in health checker to verify your installation: >
@@ -1753,5 +1754,5 @@ Example output: >
     OK  Anthropic API key set (ANTHROPIC_API_KEY)
 <
 
-=======================================================================
+==============================================================================
 vim:tw=78:ts=8:ft=help:norl:
