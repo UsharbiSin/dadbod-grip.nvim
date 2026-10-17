@@ -181,6 +181,11 @@ the whole grid by one row every time scrolling crosses that threshold.
 A winbar costs one screen line per grid window; set `sticky_header = false`
 to reclaim it for good (the badges then render as before).
 
+The shortcut hints below the result fit into two rows for each window's text
+width. They use configured keys and stay in place during horizontal table
+scrolling. Narrow windows prioritize core actions and help; `…` marks omitted
+hints when it fits. These rows scroll vertically with the end of the result.
+
 AI SQL generation (optional): >lua
   require("dadbod-grip").setup({
     ai = {
@@ -488,8 +493,8 @@ All commands are global and available after the plugin loads.
   close their popup first, then zoom the underlying split.
 
   Opening the query pad while another split is zoomed restores the layout
-  first, so the SQL window is usable. Reopening the already zoomed query-pad
-  window keeps its zoom. Native window navigation does not change zoom.
+  first, so the SQL window is usable. Reopening SQL keeps its zoom when it
+  returns to the same zoomed window. Native window navigation does not change zoom.
 
   Remap or disable only this shortcut with setup({ keymaps = { zoom = ... } }).
   Native <C-w>h/j/k/l and <C-w>w still navigate windows. <C-w>= equalizes

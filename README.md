@@ -146,6 +146,8 @@ The complete command and keymap reference lives in `:help dadbod-grip`. The [doc
 
 Use `gb` to focus the sidebar, then `<Esc>` to close it. Press `gz` in the grid, query pad, sidebar, or welcome screen to zoom that pane, and press it again to restore the layout. Native `<C-w>` window navigation still works, and `<C-p>` opens the searchable command palette in the grid, query pad, and sidebar.
 
+Opening SQL from another zoomed pane restores its split layout. Result shortcut hints fit in two rows for each window's width and stay visible during horizontal table scrolling. Narrow panes prioritize help and core actions.
+
 ## Files and federation
 
 Open a supported local or remote file with `:Grip`:

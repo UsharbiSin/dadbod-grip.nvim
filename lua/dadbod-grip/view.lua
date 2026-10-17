@@ -12,6 +12,7 @@ local filetypes = require("dadbod-grip.filetypes")
 
 local M = {}
 M._sessions = {}  -- [bufnr] = { state, url, query_sql }
+require("dadbod-grip.result_hints").attach(M._sessions)
 
 --- Canonical content window finder: unpinned grid > welcome screen > nil.
 --- Pinned sessions are excluded: callers must not auto-replace them.
@@ -823,34 +824,46 @@ local function build_render(session, opts)
     end
   end
 
-  -- ── Hint line ──
-  local hints
+  -- Resolve configured bindings outside redraw; only packing varies per window.
+  local km, hints = require("dadbod-grip.keymaps"), {}
+  local function add(action, label, prefix)
+    local key = km.get(action)
+    if key then
+      key = vim.fn.keytrans(vim.api.nvim_replace_termcodes(key, true, true, true))
+      hints[#hints + 1] = (prefix or "") .. key .. ":" .. label
+    end
+  end
+  if km.get("help") then add("help", "help") else hints[#hints + 1] = ":help dadbod-grip" end
+  local function views(current)
+    local defaults = true
+    for i = 4, 9 do if km.get("tab_" .. i) ~= tostring(i) then defaults = false end end
+    if not current and defaults then hints[#hints + 1] = "4-9:views"; return end
+    for i = 4, 9 do
+      local name = VIEW_KEYS[i]
+      add("tab_" .. i, VIEW_LABELS[name] or name, name == current and "▶" or nil)
+    end
+  end
   local cv = session.current_view
   if cv and cv ~= "records" then
-    -- Metadata view: compact tab bar with current view marked (▶)
-    local parts = {}
-    for i = 4, 9 do
-      local vn = VIEW_KEYS[i]
-      local label = VIEW_LABELS[vn] or vn
-      if vn == cv then
-        table.insert(parts, "▶" .. i .. ":" .. label)
-      else
-        table.insert(parts, i .. ":" .. label)
-      end
-    end
-    hints = " " .. table.concat(parts, "  ") .. "  │  r:refresh  q:query  ?:help"
+    add("query_pad", "query"); add("grid_refresh", "refresh"); views(cv)
   elseif session.pending_mutation then
-    local mt = session.pending_mutation.type or "SQL"
-    hints = " a:execute " .. mt .. "  U:cancel  gs:preview SQL  q:query"
+    add("grid_apply", "execute " .. (session.pending_mutation.type or "SQL"))
+    add("grid_undo_all", "cancel"); add("grid_preview_sql", "preview SQL"); add("query_pad", "query")
   elseif st.readonly and not is_editable(session) then
-    hints = " r:refresh  Tab/w:col  gy:markdown  gq:saved  q:query  A:ai  gL:pin  gJ:switch  4-9:views  ?:help"
+    add("query_pad", "query"); add("grid_refresh", "refresh")
+    add("grid_col_next", "col"); add("grid_yank_md", "markdown")
+    add("load_saved", "saved"); add("ai", "ai"); add("grid_pin", "pin"); add("grid_results", "switch"); views()
   else
-    hints = " i:edit  c:clone  d:delete  a:apply  r:refresh  gq:saved  q:query  A:ai  gL:pin  gJ:switch  4-9:views  ?:help"
+    add("grid_edit", "edit"); add("grid_apply", "apply"); add("query_pad", "query"); add("grid_refresh", "refresh")
+    add("grid_clone", "clone"); add("grid_delete", "delete"); add("load_saved", "saved")
+    add("ai", "ai"); add("grid_pin", "pin"); add("grid_results", "switch"); views()
   end
-  table.insert(lines, hints)
+  local hint_row = #lines
+  table.insert(lines, "")
+  table.insert(lines, "")
 
   local data_start = has_type_row and 5 or 4
-  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns }
+  return { lines = lines, marks = marks, widths = widths, ordered = ordered, byte_positions = row_byte_positions, hdr_byte_positions = hdr_byte_positions, type_row_byte_positions = type_row_byte_positions, data_start = data_start, visible_columns = columns, hint_row = hint_row, hint_items = hints, hint_cache = {} }
 end
 
 -- ── namespace for extmarks ───────────────────────────────────────────────
