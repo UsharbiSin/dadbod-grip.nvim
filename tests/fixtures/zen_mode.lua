@@ -98,7 +98,8 @@ return function(scenario)
   local state = data.new({columns = {'id', 'note', 'tail'}, rows = rows,
     primary_keys = scenario == 'readonly' and {} or {'id'}, table_name = 'zen_fixture'})
   local buf = view.open(state, 'sqlite:tests/seed_sqlite.db', 'SELECT * FROM zen_fixture',
-    {elapsed_ms = 4321, reuse_win = vim.api.nvim_get_current_win(), max_col_width = 80})
+    {elapsed_ms = 4321, write_elapsed_ms = scenario == 'write-owned' and 1555 or nil,
+      reuse_win = vim.api.nvim_get_current_win(), max_col_width = 80})
   local session, win = view._sessions[buf], vim.api.nvim_get_current_win()
   session.query_spec = query.set_page(query.new_table('zen_fixture', 100), 376)
   session.query_spec.filters = {{clause = 'id > 0'}}
@@ -137,7 +138,7 @@ return function(scenario)
   end
   local function snapshot()
     local values = {state = vim.inspect(session.state), undo = vim.inspect(session.undo_stack),
-      sql = session.query_sql, time = session._query_times[state.rows],
+      sql = session.query_sql, time = session._query_times[state.rows], write_time = session._write_times[state.rows],
       pad = text(pbuf), modified = vim.bo[pbuf].modified, tick = vim.api.nvim_buf_get_changedtick(pbuf),
       pad_undo = vim.api.nvim_buf_call(pbuf, vim.fn.undotree), windows = {}}
     for _, w in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -164,6 +165,9 @@ return function(scenario)
       local visible = screen(w)
       for _, value in ipairs({'2 staged', '1 hidden', '4.3s client'}) do
         assert(visible:find(value, 1, true), 'essential status not visible: ' .. value .. '\n' .. visible)
+      end
+      if scenario == 'write-owned' then
+        assert(visible:find('Write: 1.6s client', 1, true), 'owned write timing disappeared in Zen: ' .. visible)
       end
       if scenario ~= 'unknown' then
         assert(visible:find('Page 376/1000', 1, true) and visible:find('100000 rows', 1, true), 'page/total clipped: ' .. visible)
@@ -225,6 +229,10 @@ return function(scenario)
   view.render(buf, state)
   assert(not screen(win):find('client', 1, true), 'timing did not hide independently')
   assert(session._query_times[state.rows] == 4321, 'timing measurement discarded')
+  if scenario == 'write-owned' then
+    assert(not screen(win):find('Write:', 1, true), 'write timing did not hide independently')
+    assert(session._write_times[state.rows] == 1555, 'hiding write timing discarded its measurement')
+  end
   vim.api.nvim_set_current_win(win)
   press('?')
   assert(vim.api.nvim_win_get_config(0).relative ~= '', 'explicit help unavailable in Zen')

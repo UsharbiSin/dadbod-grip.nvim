@@ -156,8 +156,8 @@ Set `show_running_time = false` to hide its elapsed number while keeping the
 animated loading indicator and operation label. It resets for the next
 operation. Long labels shorten to keep the elapsed time visible. The counter
 measures waiting; it does not report database progress or identify a hung query.
-CLI timeouts
-apply separately to each call, so a multi-step operation may take longer.
+CLI timeouts apply separately to each call, so a multi-step operation may take
+longer.
 After a successful query, the results footer keeps its client-observed
 round-trip, such as "Query: 3.4s client" or "Query: 17ms client". This duration
 measures db.query, including the client process and result parsing. It excludes
@@ -167,8 +167,26 @@ duration in milliseconds. The footer stays visible during horizontal data
 scrolling; narrow windows shorten its label. If the SELECT fails or is
 interrupted, the previous result and its original duration stay in place.
 
-Set `show_result_time = false` to hide retained query and action durations in
-the result grid. Completed action status, errors, row counts, and pagination
+Mutation previews and confirmed database writes use the same loading clock.
+This includes staged apply (also imported rows), local file write-back,
+committed-transaction undo, and DDL. A write finishes its clock before its
+separate SELECT reload begins. After that reload succeeds, the status line
+keeps "Write: 1.4s client" alongside the SELECT's own Query duration. Write
+measures the db.execute call, including client startup and lock waits; it is
+not server execution time. That Write duration belongs to those refreshed
+rows: metadata and later unrelated SELECT results do not inherit it.
+Successful apply history also keeps the write duration in milliseconds.
+
+Import parsing/staging and AI generation are not database writes. The loading
+clock updates while client waits pump Neovim's event loop; CPU-only local
+preview staging can pause animation. An interrupted client wait closes the
+indicator but does not prove the server stopped or rolled back the write.
+Grip reports the database outcome as unknown for interrupted/timed-out client
+waits. Refresh and check the database before retrying. If you navigate or edit
+while a write waits, its completion keeps your newer view and staging intact.
+
+Set `show_result_time = false` to hide retained Query, Write, and action
+durations in the result grid. Completed action status, errors, row counts, and pagination
 remain visible. This option and `show_running_time` are independent and both
 default to true. They control display only: queries and actions are still
 timed, and history keeps its durations. Neither setting changes key hints,
@@ -526,11 +544,6 @@ All commands are global and available after the plugin loads.
   schema sidebar, and welcome. The command also works in ordinary file/help
   splits and the full cell-value split; those use :GripZoom without a gz map.
 
-                                                                 *:GripZen*
-:GripZen
-  Toggle automatic shortcut hints for this session. Equivalent to switching
-  `show_hints` between true (normal) and false (Zen); timing and layout remain
-  independent. Existing grids, SQL pad, sidebar, and welcome screens update.
   No windows are closed and no buffers are copied, replaced, or deleted.
   Unsaved SQL, staged results, sidebar folds, and native window keys stay
   available. Other panes remain at Neovim's minimum window size.
@@ -551,6 +564,12 @@ All commands are global and available after the plugin loads.
   Native <C-w>h/j/k/l and <C-w>w still navigate windows. <C-w>= equalizes
   sizes rather than restoring a saved layout. Avoid :only for temporary
   zoom: closing a Grip grid wipes its result buffer and staged state.
+
+                                                                 *:GripZen*
+:GripZen
+  Toggle automatic shortcut hints for this session. Equivalent to switching
+  `show_hints` between true (normal) and false (Zen); timing and layout remain
+  independent. Existing grids, SQL pad, sidebar, and welcome screens update.
 
                                                                 *:GripDrop*
 :GripDrop [table]

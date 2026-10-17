@@ -19,7 +19,7 @@ end)
 for _, case in ipairs({
   {'grid', 160}, {'grid', 80}, {'grid', 40}, {'gutter', 40}, {'shared', 100},
   {'ambiwidth', 40}, {'readonly', 40}, {'metadata', 80}, {'mutation', 40},
-  {'unknown', 40}, {'surfaces', 80}, {'custom', 80}, {'pad-editing', 80}, {'failures', 80},
+  {'unknown', 40}, {'surfaces', 80}, {'custom', 80}, {'pad-editing', 80}, {'failures', 80}, {'write-owned', 40},
 }) do
   test('native Zen ' .. case[1] .. ' ' .. case[2], function()
     local child = vim.fn.jobstart({vim.g.grip_test_progpath, '--clean', '--embed', '--headless',
