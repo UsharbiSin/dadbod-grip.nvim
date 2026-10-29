@@ -9,10 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- UPDATE and DELETE previews retain target table aliases so qualified WHERE
-  clauses resolve correctly. Alias names ending in `set` no longer interfere
-  with UPDATE staging. Table metadata and the SQL executed on confirmation
-  remain unchanged.
+- UPDATE and DELETE previews retain target aliases and quoted identifiers,
+  including comments around aliases. Clause and assignment parsing respects
+  strings, comments, and nested expressions; line comments keep their original
+  newline boundaries so the preview does not silently drop predicates.
+  Literal assignments (including commas, escaped quotes, and NULL) are staged
+  on the correct columns. Computed expressions remain unstaged until execution.
+  RETURNING stays in the original mutation rather than the preview SELECT.
+  Unsupported multi-source previews are rejected instead of guessing rows.
 
 ## [3.16.0] - 2026-10-17
 

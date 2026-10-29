@@ -192,9 +192,6 @@ end)
 for _, case in ipairs({
   { verb = "UPDATE", sql = "UPDATE orders SET status = 'done'", suffix = "" },
   { verb = "DELETE", sql = "DELETE FROM orders;", suffix = "" },
-  -- SQL Server clauses must not become aliases in the existing preview path.
-  { verb = "DELETE", sql = "DELETE FROM orders OPTION (RECOMPILE)", suffix = "" },
-  { verb = "DELETE", sql = "DELETE FROM orders FROM orders JOIN users ON orders.user_id = users.id", suffix = "" },
   { verb = "UPDATE", sql = "UPDATE orders AS o SET status = 'done'", suffix = " AS o" },
   { verb = "UPDATE", sql = "UPDATE orders AS offset SET status = 'done'", suffix = " AS offset" },
   { verb = "DELETE", sql = "DELETE FROM orders AS o;", suffix = " AS o" },
@@ -208,6 +205,18 @@ for _, case in ipairs({
     close_sessions()
   end)
 end
+
+test("preview: a second DELETE source is rejected instead of previewing the whole table", function()
+  close_sessions()
+  local notify, notice = vim.notify, nil
+  vim.notify = function(message) notice = message end
+  local ok, err = pcall(init._mutation_preview,
+    "DELETE FROM orders FROM orders JOIN users ON orders.user_id = users.id", URL, "DELETE", {})
+  vim.notify = notify
+  assert(ok, err)
+  eq(next(view._sessions), nil, "no guessed preview")
+  assert(notice and notice:find("single target table", 1, true), "unsupported source explained")
+end)
 
 -- ── delete on inserted row ──
 

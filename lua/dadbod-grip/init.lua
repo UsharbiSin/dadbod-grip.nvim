@@ -117,7 +117,7 @@ end
 
 -- Share the token stream between projection and source checks: comments and
 -- quoted identifiers must never supply a different FROM to either check.
-local function tokenize_select(sql_text, adapter_kind)
+local function tokenize_select(sql_text, adapter_kind, with_positions)
   local tokens = {}
   local i = 1
   local len = #sql_text
@@ -198,16 +198,23 @@ local function tokenize_select(sql_text, adapter_kind)
     skip_space()
     if i > len then break end
 
+    local token_start, token_count = i, #tokens
     local ch = sql_text:sub(i, i)
     local next_ch = sql_text:sub(i + 1, i + 1)
 
-    if ch == "-" and next_ch == "-" then
+    local following = sql_text:sub(i + 2, i + 2)
+    if with_positions and adapter_kind == "mysql" and ch == "-" and next_ch == "-"
+        and following ~= "" and not following:match("[%s%c]") then
+      -- Mutation predicates keep MySQL subtraction such as value--1 intact.
+      tokens[#tokens + 1] = { kind = "-" }
+      i = i + 1
+    elseif (ch == "-" and next_ch == "-")
+        or (with_positions and adapter_kind == "mysql" and ch == "#") then
       -- MySQL requires whitespace/control after --; otherwise it can be
       -- arithmetic, e.g. total--1 AS status, rather than a comment.
-      local following = sql_text:sub(i + 2, i + 2)
-      if adapter_kind == "mysql" and following ~= ""
+      if ch == "-" and adapter_kind == "mysql" and following ~= ""
           and not following:match("[%s%c]") then return nil end
-      local newline = sql_text:find("[\r\n]", i + 2)
+      local newline = sql_text:find("[\r\n]", i + (ch == "#" and 1 or 2))
       -- PostgreSQL and DuckDB also end comments at a bare CR. Other clients
       -- differ, so accept their shared CRLF form and reject an ambiguous CR.
       if newline and sql_text:sub(newline, newline) == "\r"
@@ -274,6 +281,10 @@ local function tokenize_select(sql_text, adapter_kind)
     else
       tokens[#tokens + 1] = { kind = ch }
       i = i + 1
+    end
+    if with_positions and #tokens > token_count then
+      tokens[#tokens].start = token_start
+      tokens[#tokens].finish = i - 1
     end
   end
   return tokens
@@ -1026,90 +1037,32 @@ local function parse_insert_values(flat, columns)
   return rows
 end
 
--- Read only the optional alias after a mutation's target table. Keep its SQL
--- spelling: quoting a bare alias changes PostgreSQL case folding, and quoted
--- aliases can contain dots or doubled quotes.
-local function mutation_preview_alias(tail)
-  if not tail then return nil end
-  tail = tail:match("^%s*(.-)%s*$")
-  local after_as = tail:match("^[Aa][Ss]%s+(.*)")
-  if after_as then tail = after_as end
-  local quote = tail:sub(1, 1)
-  if quote == '"' or quote == "`" or quote == "[" then
-    local close_quote = quote == "[" and "]" or quote
-    local pos = 2
-    while pos <= #tail do
-      if tail:sub(pos, pos) == close_quote then
-        if tail:sub(pos + 1, pos + 1) == close_quote then
-          pos = pos + 2
-        else
-          return tail:sub(1, pos)
-        end
-      else
-        pos = pos + 1
-      end
-    end
-    return nil
-  end
-  local alias = tail:match("^([%a_\128-\255][%w_$\128-\255]*)")
-  local clauses = {
-    SET = true, WHERE = true, ORDER = true, LIMIT = true, OFFSET = true,
-    RETURNING = true, OUTPUT = true, USING = true, FROM = true, OPTION = true,
-    JOIN = true, INNER = true,
-    LEFT = true, RIGHT = true, FULL = true, CROSS = true, NATURAL = true,
-    INDEXED = true, NOT = true, PARTITION = true, WITH = true,
-    USE = true, FORCE = true, IGNORE = true,
-  }
-  return alias and (after_as or not clauses[alias:upper()]) and alias or nil
-end
-
 -- ── mutation preview ──────────────────────────────────────────────────────
 -- Shows affected rows in a grid before executing UPDATE/DELETE/INSERT.
 function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
-  local sql_mod = require("dadbod-grip.sql")
-
-  -- Extract table name from the SQL (handles quoted identifiers)
-  local flat = mutation_sql:gsub("\n", " ")
-  local table_name, table_alias
+  local flat, table_name, preview_sql, assignments
   if stmt_type == "UPDATE" or stmt_type == "DELETE" then
-    local target = stmt_type == "UPDATE"
-      and flat:match("[Uu][Pp][Dd][Aa][Tt][Ee]%s+(.*)")
-      or flat:match("[Ff][Rr][Oo][Mm]%s+(.*)")
-    if target then
-      local tail
-      table_name, tail = target:match('^"([^"]+)"(.*)')
-      if not table_name then table_name, tail = target:match("^`([^`]+)`(.*)") end
-      if not table_name then table_name, tail = target:match("^([%w_%.]+)(.*)") end
-      table_alias = mutation_preview_alias(tail)
+    local kind = adapters.kind(db.resolved_url(url))
+    local parsed, err = require("dadbod-grip.mutation").parse(
+      mutation_sql, tokenize_select(mutation_sql, kind, true), kind, stmt_type)
+    if not parsed then
+      vim.notify("Could not preview " .. stmt_type .. ": " .. (err or "unsupported SQL syntax"), vim.log.levels.ERROR)
+      return
     end
-  elseif stmt_type == "INSERT" then
+    table_name, assignments = parsed.table_name, parsed.assignments
+    preview_sql = "SELECT * FROM " .. parsed.source_sql
+    if parsed.where and parsed.where ~= "" then preview_sql = preview_sql .. " WHERE " .. parsed.where end
+  else
+    -- INSERT keeps its existing full-table preview and VALUES parser.
+    flat = mutation_sql:gsub("\n", " ")
     table_name = flat:match('[Ii][Nn][Ss][Ee][Rr][Tt]%s+[Ii][Nn][Tt][Oo]%s+"([^"]+)"')
       or flat:match("[Ii][Nn][Ss][Ee][Rr][Tt]%s+[Ii][Nn][Tt][Oo]%s+`([^`]+)`")
       or flat:match("[Ii][Nn][Ss][Ee][Rr][Tt]%s+[Ii][Nn][Tt][Oo]%s+([%w_%.]+)")
-  end
-
-  if not table_name then
-    vim.notify("Could not parse table from " .. stmt_type, vim.log.levels.ERROR)
-    return
-  end
-
-  -- Extract WHERE clause (not applicable for INSERT)
-  local where
-  if stmt_type ~= "INSERT" then
-    where = flat:match("[Ww][Hh][Ee][Rr][Ee]%s+(.+)$")
-    if where then
-      where = where:gsub("%s*;%s*$", "")
-      -- Strip trailing ORDER BY, LIMIT etc.
-      where = where:gsub("%s+[Oo][Rr][Dd][Ee][Rr]%s+[Bb][Yy].*$", "")
-      where = where:gsub("%s+[Ll][Ii][Mm][Ii][Tt]%s+.*$", "")
+    if not table_name then
+      vim.notify("Could not parse table from " .. stmt_type, vim.log.levels.ERROR)
+      return
     end
-  end
-
-  -- Build preview SELECT (INSERT shows full current table state)
-  local preview_sql = "SELECT * FROM " .. sql_mod.quote_ident(table_name)
-  if table_alias then preview_sql = preview_sql .. " AS " .. table_alias end
-  if where and where ~= "" then
-    preview_sql = preview_sql .. " WHERE " .. where
+    preview_sql = "SELECT * FROM " .. sql.quote_ident(table_name)
   end
 
   local preview = ui.blocking("  previewing " .. spinner_label(table_name) .. "...", function()
@@ -1138,26 +1091,13 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
     local state = data.new(result)
     local row_count = #result.rows
 
-    -- For UPDATE: parse SET clause and pre-stage changes so cells show as blue
+    -- Stage only parsed literal assignments. Expressions are executed by the
+    -- database on confirmation; their text is not a predicted cell value.
     if stmt_type == "UPDATE" and row_count > 0 then
-      -- Do not mistake the end of an alias such as offset for the SET keyword.
-      local set_clause = flat:match("%f[%w_$\128-\255][Ss][Ee][Tt]%s+(.-)%s+[Ww][Hh][Ee][Rr][Ee]")
-        or flat:match("%f[%w_$\128-\255][Ss][Ee][Tt]%s+(.-)%s*;?%s*$")
-      if set_clause then
-        -- Parse "col = 'val', col2 = 'val2'" assignments
-        for assignment in set_clause:gmatch("([^,]+)") do
-          local col_raw, val_raw = assignment:match("^%s*(.-)%s*=%s*(.-)%s*$")
-          if col_raw and val_raw then
-            -- Strip quotes from column name
-            local col = col_raw:match('^"([^"]+)"$') or col_raw:match("^`([^`]+)`$") or col_raw:match("^%s*(%S+)%s*$")
-            -- Strip quotes from value
-            local val = val_raw:match("^'(.-)'$") or val_raw:match('^"(.-)"$') or val_raw
-            if col and val then
-              -- Apply as staged change to every row
-              for row_idx = 1, #state.rows do
-                state = data.add_change(state, row_idx, col, val)
-              end
-            end
+      for _, assignment in ipairs(assignments) do
+        if vim.tbl_contains(state.columns, assignment.column) then
+          for row_idx = 1, #state.rows do
+            state = data.add_change(state, row_idx, assignment.column, assignment.value)
           end
         end
       end
