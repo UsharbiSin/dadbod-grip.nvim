@@ -1026,6 +1026,43 @@ local function parse_insert_values(flat, columns)
   return rows
 end
 
+-- Read only the optional alias after a mutation's target table. Keep its SQL
+-- spelling: quoting a bare alias changes PostgreSQL case folding, and quoted
+-- aliases can contain dots or doubled quotes.
+local function mutation_preview_alias(tail)
+  if not tail then return nil end
+  tail = tail:match("^%s*(.-)%s*$")
+  local after_as = tail:match("^[Aa][Ss]%s+(.*)")
+  if after_as then tail = after_as end
+  local quote = tail:sub(1, 1)
+  if quote == '"' or quote == "`" or quote == "[" then
+    local close_quote = quote == "[" and "]" or quote
+    local pos = 2
+    while pos <= #tail do
+      if tail:sub(pos, pos) == close_quote then
+        if tail:sub(pos + 1, pos + 1) == close_quote then
+          pos = pos + 2
+        else
+          return tail:sub(1, pos)
+        end
+      else
+        pos = pos + 1
+      end
+    end
+    return nil
+  end
+  local alias = tail:match("^([%a_\128-\255][%w_$\128-\255]*)")
+  local clauses = {
+    SET = true, WHERE = true, ORDER = true, LIMIT = true, OFFSET = true,
+    RETURNING = true, OUTPUT = true, USING = true, FROM = true, OPTION = true,
+    JOIN = true, INNER = true,
+    LEFT = true, RIGHT = true, FULL = true, CROSS = true, NATURAL = true,
+    INDEXED = true, NOT = true, PARTITION = true, WITH = true,
+    USE = true, FORCE = true, IGNORE = true,
+  }
+  return alias and (after_as or not clauses[alias:upper()]) and alias or nil
+end
+
 -- ── mutation preview ──────────────────────────────────────────────────────
 -- Shows affected rows in a grid before executing UPDATE/DELETE/INSERT.
 function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
@@ -1033,16 +1070,18 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
 
   -- Extract table name from the SQL (handles quoted identifiers)
   local flat = mutation_sql:gsub("\n", " ")
-  local table_name
-  if stmt_type == "UPDATE" then
-    local after_update = flat:match("[Uu][Pp][Dd][Aa][Tt][Ee]%s+(.*)")
-    if after_update then
-      table_name = after_update:match('^"([^"]+)"') or after_update:match("^`([^`]+)`") or after_update:match("^([%w_%.]+)")
+  local table_name, table_alias
+  if stmt_type == "UPDATE" or stmt_type == "DELETE" then
+    local target = stmt_type == "UPDATE"
+      and flat:match("[Uu][Pp][Dd][Aa][Tt][Ee]%s+(.*)")
+      or flat:match("[Ff][Rr][Oo][Mm]%s+(.*)")
+    if target then
+      local tail
+      table_name, tail = target:match('^"([^"]+)"(.*)')
+      if not table_name then table_name, tail = target:match("^`([^`]+)`(.*)") end
+      if not table_name then table_name, tail = target:match("^([%w_%.]+)(.*)") end
+      table_alias = mutation_preview_alias(tail)
     end
-  elseif stmt_type == "DELETE" then
-    table_name = flat:match('[Ff][Rr][Oo][Mm]%s+"([^"]+)"')
-      or flat:match("[Ff][Rr][Oo][Mm]%s+`([^`]+)`")
-      or flat:match("[Ff][Rr][Oo][Mm]%s+([%w_%.]+)")
   elseif stmt_type == "INSERT" then
     table_name = flat:match('[Ii][Nn][Ss][Ee][Rr][Tt]%s+[Ii][Nn][Tt][Oo]%s+"([^"]+)"')
       or flat:match("[Ii][Nn][Ss][Ee][Rr][Tt]%s+[Ii][Nn][Tt][Oo]%s+`([^`]+)`")
@@ -1068,6 +1107,7 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
 
   -- Build preview SELECT (INSERT shows full current table state)
   local preview_sql = "SELECT * FROM " .. sql_mod.quote_ident(table_name)
+  if table_alias then preview_sql = preview_sql .. " AS " .. table_alias end
   if where and where ~= "" then
     preview_sql = preview_sql .. " WHERE " .. where
   end
@@ -1100,8 +1140,9 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts)
 
     -- For UPDATE: parse SET clause and pre-stage changes so cells show as blue
     if stmt_type == "UPDATE" and row_count > 0 then
-      local set_clause = flat:match("[Ss][Ee][Tt]%s+(.-)%s+[Ww][Hh][Ee][Rr][Ee]")
-        or flat:match("[Ss][Ee][Tt]%s+(.-)%s*;?%s*$")
+      -- Do not mistake the end of an alias such as offset for the SET keyword.
+      local set_clause = flat:match("%f[%w_$\128-\255][Ss][Ee][Tt]%s+(.-)%s+[Ww][Hh][Ee][Rr][Ee]")
+        or flat:match("%f[%w_$\128-\255][Ss][Ee][Tt]%s+(.-)%s*;?%s*$")
       if set_clause then
         -- Parse "col = 'val', col2 = 'val2'" assignments
         for assignment in set_clause:gmatch("([^,]+)") do

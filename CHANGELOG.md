@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- UPDATE and DELETE previews retain target table aliases so qualified WHERE
+  clauses resolve correctly. Alias names ending in `set` no longer interfere
+  with UPDATE staging. Table metadata and the SQL executed on confirmation
+  remain unchanged.
+
 ## [3.16.0] - 2026-10-17
 
 ### Added
