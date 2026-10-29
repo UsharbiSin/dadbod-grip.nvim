@@ -91,7 +91,7 @@ local _ALIAS_KEYWORDS = {
 }
 
 --- Parse a SQL string and return a map of alias → table_name.
---- Recognises FROM/JOIN with optional AS keyword.
+--- Recognises FROM/JOIN/UPDATE with optional AS keyword.
 --- Aliases that match SQL keywords are skipped.
 --- Returns { ["e"] = "employees", ["d"] = "departments", ... } (lowercase keys/values).
 function M.extract_aliases(sql)
@@ -131,6 +131,15 @@ function M.extract_aliases(sql)
       if not aliases[key] then
         aliases[key] = strip_quotes(tbl):lower()
       end
+    end
+  end
+
+  -- UPDATE also introduces a target alias without AS. Require a word boundary
+  -- so a column such as last_update cannot introduce a spurious alias.
+  for tbl, alias in up:gmatch("%f[%w_$\128-\255]UPDATE%s+([%w_%.\"'`]+)%s+([%w_]+)") do
+    if not _ALIAS_KEYWORDS[alias] then
+      local key = alias:lower()
+      if not aliases[key] then aliases[key] = strip_quotes(tbl):lower() end
     end
   end
 

@@ -293,6 +293,39 @@ do
   eq(a["e"], "employees", "extract: FROM table AS alias")
 end
 
+-- UPDATE targets participate in dotted completion with or without AS.
+for _, sql_text in ipairs({
+  "UPDATE orders o SET total = 1 WHERE o.",
+  "update orders o set total = 1 where o.",
+  "UPDATE\norders\no\nSET total = 1 WHERE o.",
+  'UPDATE "orders" o SET total = 1 WHERE o.',
+  "UPDATE `orders` o SET total = 1 WHERE o.",
+  "UPDATE orders AS o SET total = 1 WHERE o.",
+  "DELETE FROM orders o WHERE o.",
+  "DELETE o FROM orders o WHERE o.",
+}) do
+  eq(ea(sql_text)["o"], "orders", "extract: mutation target alias in " .. sql_text)
+end
+eq(next(ea("UPDATE orders SET total = 1")), nil, "extract: UPDATE SET is not an alias")
+eq(next(ea("SELECT last_update orders o")), nil, "extract: UPDATE inside an identifier is ignored")
+eq(next(ea("SELECT x$UPDATE orders o")), nil, "extract: UPDATE after identifier dollar is ignored")
+eq(next(ea("SELECT 名UPDATE orders o")), nil, "extract: UPDATE after Unicode identifier is ignored")
+eq(ea("UPDATE orders o SET total = 1; UPDATE users u SET name = 'x'")["u"],
+  "users", "extract: UPDATE alias in a later statement")
+
+do
+  local restore = mock_db({ users = USERS_COLS, orders = ORDERS_COLS })
+  completion.invalidate(PG_URL)
+  local sql_text = "UPDATE orders o SET total = 1 WHERE o."
+  local items = completion.complete(sql_text, PG_URL, ea(sql_text))
+  local names = {}
+  for _, item in ipairs(items) do names[item.word] = true end
+  ok(names["total"], "UPDATE alias+complete: target column total")
+  ok(names["user_id"], "UPDATE alias+complete: target column user_id")
+  eq(names["email"], nil, "UPDATE alias+complete: no unrelated table columns")
+  restore()
+end
+
 -- JOIN table alias
 do
   local a = ea("FROM orders o JOIN employees e ON o.emp_id = e.id")

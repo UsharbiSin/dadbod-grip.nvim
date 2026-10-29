@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the correct columns. Computed expressions remain unstaged until execution.
   RETURNING stays in the original mutation rather than the preview SELECT.
   Unsupported multi-source previews are rejected instead of guessing rows.
+- Column completion resolves UPDATE target aliases written without AS.
 
 ## [3.16.0] - 2026-10-17
 
