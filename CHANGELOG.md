@@ -21,7 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adapter's affected count. Unsupported or multiple-statement previews fail
   without writing. Committed transaction previews retain their complete SQL;
   rollback blocks cannot be stripped into committed mutations.
-- Column completion resolves UPDATE target aliases written without AS.
+- Alias completion recognizes mutation targets and MySQL inserted-row aliases,
+  including column renames, while ignoring strings and comments. The alias
+  cache is shared by completion providers and follows connection changes.
 - Build mutation preview staging in one pass instead of repeatedly copying
   prior changes. Shared SQL tokenization scans words, strings, and comments
   in chunks while preserving the existing SELECT editability checks.
