@@ -3,7 +3,7 @@
 local grip, view = require("dadbod-grip"), require("dadbod-grip.view")
 local db = require("dadbod-grip.db")
 local pass, fail = 0, 0
-local notify = vim.notify
+local notify, confirm = vim.notify, vim.fn.confirm
 local original = {
   query = db.query, execute = db.execute, is_readonly = db.is_readonly,
   get_primary_keys = db.get_primary_keys, get_column_info = db.get_column_info,
@@ -45,11 +45,77 @@ end
 local function test(name, run)
   cleanup()
   queries, writes, metadata, notices = {}, {}, {}, {}
+  db.is_readonly = function() return false end
+  db.execute = function(sql) writes[#writes + 1] = sql; error("preview attempted a write") end
+  vim.fn.confirm = confirm
   local ok, err = pcall(run)
+  vim.fn.confirm = confirm
   if ok then pass = pass + 1 else fail = fail + 1; print("FAIL: " .. name .. ": " .. tostring(err)) end
 end
 
 local cases = {
+  {
+    name = "SQL Server unquoted OUTPUT assignment column", kind = "sqlserver",
+    sql = "UPDATE items SET output=1, value='changed' WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+  },
+  {
+    name = "SQL Server OUTPUT column expression before OUTPUT clause", kind = "sqlserver",
+    sql = "UPDATE items SET value=output OUTPUT inserted.value WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2',
+  },
+  {
+    name = "SQL Server OUTPUT and RETURNING result aliases", kind = "sqlserver",
+    sql = "UPDATE items SET value='changed' OUTPUT inserted.id AS output, inserted.value AS returning WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+  },
+  {
+    name = "SQL Server UPDATE OUTPUT before WHERE", kind = "sqlserver",
+    sql = "UPDATE items SET value='changed' OUTPUT inserted.id, deleted.value WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+  },
+  {
+    name = "SQL Server UPDATE OUTPUT INTO destination list", kind = "sqlserver",
+    sql = "UPDATE items SET value='changed' OUTPUT inserted.id, CONCAT(deleted.value,',',inserted.value)"
+      .. " INTO audit_items(id,value) WHERE id=2 OPTION (RECOMPILE)",
+    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+  },
+  {
+    name = "SQL Server UPDATE two OUTPUT clauses and nested SET", kind = "sqlserver",
+    sql = "UPDATE items SET value=CONCAT('x',',y') OUTPUT inserted.id INTO @audit(id)"
+      .. " OUTPUT inserted.value WHERE id IN (SELECT id FROM other WHERE value='OUTPUT')",
+    select = 'SELECT * FROM "items" WHERE id IN (SELECT id FROM other WHERE value=\'OUTPUT\')',
+  },
+  {
+    name = "SQL Server UPDATE OUTPUT without WHERE", kind = "sqlserver",
+    sql = "UPDATE items SET value='changed' OUTPUT inserted.id",
+    select = 'SELECT * FROM "items"', value = "changed",
+  },
+  {
+    name = "SQL Server DELETE OUTPUT before WHERE", kind = "sqlserver",
+    sql = "DELETE FROM items OUTPUT deleted.id, deleted.value WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2',
+  },
+  {
+    name = "SQL Server DELETE optional FROM and OUTPUT INTO", kind = "sqlserver",
+    sql = "DELETE items OUTPUT deleted.id INTO audit_items(id) WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2',
+  },
+  {
+    name = "SQL Server DELETE quoted optional FROM target", kind = "sqlserver",
+    sql = "DELETE [dbo].[items] OUTPUT deleted.[id] WHERE [id]=2",
+    table_name = "dbo.items", select = 'SELECT * FROM "dbo"."items" WHERE [id]=2',
+  },
+  {
+    name = "SQL Server DELETE OUTPUT without WHERE", kind = "sqlserver",
+    sql = "DELETE items OUTPUT deleted.id",
+    select = 'SELECT * FROM "items"',
+  },
+  {
+    name = "SQL Server DELETE alias source", kind = "sqlserver",
+    sql = "DELETE i FROM items AS i WHERE i.id=2",
+    select = 'SELECT * FROM "items" AS i WHERE i.id=2',
+  },
   {
     name = "SQL Server trailing OPTION hint", kind = "sqlserver",
     sql = "DELETE FROM items OPTION (RECOMPILE)",
@@ -104,6 +170,7 @@ local cases = {
 }
 for _, case in ipairs(cases) do
   test(case.name, function()
+    if case.kind == "sqlserver" then db.is_readonly = original.is_readonly end
     grip._mutation_preview(case.sql, case.kind .. "://unused/fixture", case.sql:match("^%u+"), {})
     local session = assert(view._sessions[vim.api.nvim_get_current_buf()], table.concat(notices, "; "))
     local pending = assert(session.pending_mutation, "no pending mutation")
@@ -111,14 +178,33 @@ for _, case in ipairs(cases) do
     eq(session.state.sql, case.select, "session SELECT")
     eq(pending.sql, case.sql, "original mutation retained")
     eq(pending.table_name, case.table_name or "items", "base-table metadata")
-    eq(metadata, { case.table_name or "items" }, "schema lookup target")
+    eq(metadata, case.kind == "sqlserver" and {} or { case.table_name or "items" }, "schema lookup target")
     eq(session.state.changes[1], case.value and { value = case.value } or nil, "literal-only staging")
     eq(writes, {}, "no mutation executed")
     eq(notices, {}, "no warnings/errors")
+    if case.kind == "sqlserver" then
+      eq(session.state.readonly, true, "SQL Server grid remains read-only")
+      local apply = vim.fn.maparg(require("dadbod-grip.keymaps").get("grid_apply"), "n", false, true).callback
+      vim.fn.confirm = function() return 2 end
+      apply()
+      eq(writes, {}, "declining confirmation must not execute")
+      db.execute = function(sql) writes[#writes + 1] = sql; return { affected = 1 } end
+      vim.fn.confirm = function() return 1 end
+      apply()
+      eq(writes, { case.sql }, "confirmed SQL executes exactly once despite read-only grid")
+      eq(session.pending_mutation, nil, "confirmed mutation cleared")
+      eq(notices, {}, "confirmation warnings/errors")
+    end
   end)
 end
 
 for _, case in ipairs({
+  { kind = "sqlserver", sql = "UPDATE i SET value='changed' OUTPUT inserted.id FROM items AS i WHERE i.id=2" },
+  { kind = "sqlserver", sql = "DELETE i OUTPUT deleted.id FROM items AS i JOIN other AS o ON i.id=o.id" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' OUTPUT inserted.id; DELETE FROM items" },
+  { kind = "sqlserver", sql = "DELETE items OUTPUT deleted.id WHERE id=2; DELETE FROM other" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' OUTPUT WHERE id=2" },
+  { kind = "sqlserver", sql = "DELETE items OUTPUT" },
   { kind = "mysql", sql = "UPDATE items /*!50000 AS i */ SET value='changed' WHERE id=2" },
   { kind = "mysql", sql = "UPDATE items /*M!100100 AS i */ SET value='changed' WHERE id=2" },
   { kind = "postgresql", sql = "UPDATE items SET value=other.value FROM other WHERE items.id=other.id" },

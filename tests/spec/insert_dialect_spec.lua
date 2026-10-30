@@ -2,7 +2,7 @@
 local grip, view = require("dadbod-grip"), require("dadbod-grip.view")
 local db, data = require("dadbod-grip.db"), require("dadbod-grip.data")
 local pass, fail = 0, 0
-local notify = vim.notify
+local notify, confirm = vim.notify, vim.fn.confirm
 local original = {
   query = db.query, execute = db.execute, is_readonly = db.is_readonly,
   get_primary_keys = db.get_primary_keys, get_column_info = db.get_column_info,
@@ -44,11 +44,55 @@ end
 local function test(name, run)
   cleanup()
   queries, writes, notices = {}, {}, {}
+  db.is_readonly = function() return false end
+  db.execute = function(sql) writes[#writes + 1] = sql; error("preview attempted a write") end
+  vim.fn.confirm = confirm
   local ok, err = pcall(run)
+  vim.fn.confirm = confirm
   if ok then pass = pass + 1 else fail = fail + 1; print("FAIL: " .. name .. ": " .. tostring(err)) end
 end
 
 local cases = {
+  {
+    name = "SQL Server optional INTO", kind = "sqlserver",
+    sql = "INSERT items(id,value) VALUES(3,'three')",
+    values = { { id = "3", value = "three" } },
+  },
+  {
+    name = "SQL Server OUTPUT before VALUES", kind = "sqlserver",
+    sql = "INSERT INTO items(id,value) OUTPUT inserted.id, inserted.value VALUES(3,'three')",
+    values = { { id = "3", value = "three" } },
+  },
+  {
+    name = "SQL Server OUTPUT INTO destination columns", kind = "sqlserver",
+    sql = "INSERT items(id,value) OUTPUT inserted.id, CONCAT(inserted.value,',VALUES')"
+      .. " INTO audit_items(new_id,new_value) VALUES(3,'three')",
+    values = { { id = "3", value = "three" } },
+  },
+  {
+    name = "SQL Server OUTPUT INTO and output to client", kind = "sqlserver",
+    sql = "INSERT INTO items(id,value) OUTPUT inserted.id INTO @audit(id)"
+      .. " OUTPUT inserted.value VALUES(3,'three'),(4,'four')",
+    values = { { id = "3", value = "three" }, { id = "4", value = "four" } },
+  },
+  {
+    name = "SQL Server OUTPUT before SELECT", kind = "sqlserver",
+    sql = "INSERT INTO items(id,value) OUTPUT inserted.id SELECT id,value FROM other",
+  },
+  {
+    name = "SQL Server OUTPUT before DEFAULT VALUES", kind = "sqlserver",
+    sql = "INSERT INTO items OUTPUT inserted.id DEFAULT VALUES",
+  },
+  {
+    name = "SQL Server quoted OUTPUT-shaped target columns", kind = "sqlserver",
+    sql = "INSERT INTO [dbo].[items]([id],[value]) OUTPUT inserted.[VALUES] VALUES(3,'three')",
+    table_name = "dbo.items", select = 'SELECT * FROM "dbo"."items"',
+    values = { { id = "3", value = "three" } },
+  },
+  {
+    name = "SQL Server OUTPUT Unicode expression values stay unknown", kind = "sqlserver",
+    sql = "INSERT items(id,value) OUTPUT inserted.id VALUES(3,N'three')",
+  },
   {
     name = "MySQL VALUES row and column aliases", kind = "mysql",
     sql = "INSERT INTO items(id,value) VALUES(3,'three') AS new(nid,nvalue)",
@@ -201,6 +245,7 @@ local cases = {
 }
 for _, case in ipairs(cases) do
   test(case.name, function()
+    if case.kind == "sqlserver" then db.is_readonly = original.is_readonly end
     grip.open(case.sql, case.kind .. "://unused/fixture", { from_pad = true })
     local session = assert(view._sessions[vim.api.nvim_get_current_buf()], table.concat(notices, "; "))
     local pending = assert(session.pending_mutation, "no pending mutation")
@@ -221,10 +266,27 @@ for _, case in ipairs(cases) do
     end
     eq(writes, {}, "preview must not execute")
     eq(notices, {}, "no warnings/errors")
+    if case.kind == "sqlserver" then
+      eq(session.state.readonly, true, "SQL Server grid remains read-only")
+      local apply = vim.fn.maparg(require("dadbod-grip.keymaps").get("grid_apply"), "n", false, true).callback
+      vim.fn.confirm = function() return 2 end
+      apply()
+      eq(writes, {}, "declining confirmation must not execute")
+      db.execute = function(sql) writes[#writes + 1] = sql; return { affected = 1 } end
+      vim.fn.confirm = function() return 1 end
+      apply()
+      eq(writes, { case.sql }, "confirmed SQL executes exactly once despite read-only grid")
+      eq(session.pending_mutation, nil, "confirmed mutation cleared")
+      eq(notices, {}, "confirmation warnings/errors")
+    end
   end)
 end
 
 for _, case in ipairs({
+  { kind = "sqlserver", sql = "INSERT INTO items OUTPUT inserted.id VALUES(3,'three'); DELETE FROM items" },
+  { kind = "sqlserver", sql = "INSERT INTO items OUTPUT inserted.id" },
+  { kind = "sqlserver", sql = "INSERT INTO items OUTPUT VALUES(3,'three')" },
+  { kind = "sqlserver", sql = "INSERT INTO items OUTPUT inserted.id INTO audit(id) EXEC proc_name" },
   { kind = "duckdb", sql = "INSERT OR ABORT INTO items VALUES(3,'three')" },
   { kind = "duckdb", sql = "INSERT INTO items BY WRONG SELECT 3,'three'" },
   { kind = "postgresql", sql = "INSERT INTO items (SELECT 3,'three'); DELETE FROM items" },

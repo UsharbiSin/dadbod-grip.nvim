@@ -86,15 +86,20 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
     end
     if tokens[pos] and tokens[pos].upper == "INTO" then
       pos = pos + 1
-    elseif adapter_kind ~= "mysql" then return reject() end
+    elseif adapter_kind ~= "mysql" and adapter_kind ~= "sqlserver" then return reject() end
   elseif stmt_type == "DELETE" then
-    if tokens[pos] and tokens[pos].upper ~= "FROM" then
-      if tokens[pos].kind ~= "ident" then return reject() end
-      delete_target = tokens[pos]
+    -- SQL Server also permits DELETE table WHERE ..., without the first FROM.
+    local optional_from = adapter_kind == "sqlserver" and tokens[pos]
+      and tokens[pos].upper ~= "FROM" and not (tokens[pos + 1] and tokens[pos + 1].upper == "FROM")
+    if not optional_from then
+      if tokens[pos] and tokens[pos].upper ~= "FROM" then
+        if tokens[pos].kind ~= "ident" then return reject() end
+        delete_target = tokens[pos]
+        pos = pos + 1
+      end
+      if not tokens[pos] or tokens[pos].upper ~= "FROM" then return reject() end
       pos = pos + 1
     end
-    if not tokens[pos] or tokens[pos].upper ~= "FROM" then return reject() end
-    pos = pos + 1
   end
 
   local target
@@ -216,6 +221,23 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
     end
     if source_query(pos) then result.current_state = true; return result end
 
+    if adapter_kind == "sqlserver" and tokens[pos] and tokens[pos].upper == "OUTPUT" then
+      -- OUTPUT (including INTO and its destination columns) precedes the source
+      -- in T-SQL. Its expressions are not INSERT values or a target column list.
+      local output_start = pos
+      pos = pos + 1
+      while pos <= last do
+        local token, previous = tokens[pos], tokens[pos - 1]
+        if depth[pos] == 0 and previous.kind ~= "." and
+            (token.upper == "VALUES" or token.upper == "SELECT"
+              or (token.upper == "DEFAULT" and tokens[pos + 1] and tokens[pos + 1].upper == "VALUES")) then
+          break
+        end
+        pos = pos + 1
+      end
+      if pos > last or pos == output_start + 1 then return reject() end
+    end
+
     local body = tokens[pos] and tokens[pos].upper
     if body == "SELECT" or body == "WITH" or body == "TABLE" or body == "OVERRIDING"
         or (adapter_kind == "duckdb" and body == "FROM") then
@@ -324,11 +346,12 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
   elseif pos <= last and tokens[pos].upper ~= "WHERE"
       and tokens[pos].upper ~= "ORDER" and tokens[pos].upper ~= "LIMIT"
       and tokens[pos].upper ~= "RETURNING"
-      and (tokens[pos].upper ~= "OPTION" or adapter_kind ~= "sqlserver") then
+      and ((tokens[pos].upper ~= "OPTION" and tokens[pos].upper ~= "OUTPUT")
+        or adapter_kind ~= "sqlserver") then
     return reject()
   end
 
-  local where_idx, tail_idx
+  local where_idx, tail_idx, output_idx
   for idx = pos, last do
     local token = tokens[idx]
     local previous, following = tokens[idx - 1], tokens[idx + 1]
@@ -337,18 +360,27 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
       local keyword = token.upper
       -- UPDATE FROM adds another source, but DISTINCT FROM is an expression
       -- operator. Once WHERE starts, source clauses can only be nested queries.
-      if not where_idx and ((keyword == "FROM" and tokens[idx - 1].upper ~= "DISTINCT")
-          or (keyword == "OUTPUT" and adapter_kind == "sqlserver")) then return reject() end
-      if keyword == "WHERE" then
+      if not where_idx and keyword == "FROM" and tokens[idx - 1].upper ~= "DISTINCT" then return reject() end
+      if keyword == "OUTPUT" and adapter_kind == "sqlserver" and not output_idx then
+        local operand = (following and following.kind == "=")
+          or (previous and (expression_prefix[previous.upper] or previous.upper == "SET"
+            or previous.upper == "AS" or previous.kind:match("^[=+*/%%<>!~|&^,:@-]$")))
+        if not operand then
+          if where_idx or not following or following.upper == "WHERE" or following.upper == "OPTION" then
+            return reject()
+          end
+          output_idx = idx
+        end
+      elseif keyword == "WHERE" then
         if where_idx then return reject() end
         where_idx = idx
-      elseif keyword == "RETURNING" or keyword == "LIMIT"
-          or (keyword == "OPTION" and adapter_kind == "sqlserver")
-          or (keyword == "ORDER" and following and following.upper == "BY") then
+      elseif ((not output_idx or where_idx) and (keyword == "RETURNING" or keyword == "LIMIT"
+          or (keyword == "ORDER" and following and following.upper == "BY")))
+          or (keyword == "OPTION" and adapter_kind == "sqlserver") then
         -- Some dialects allow these words as unquoted columns. An assignment
         -- or expression operand cannot start a trailing statement clause.
         local operand = (following and following.kind == "=")
-          or (previous and (expression_prefix[previous.upper]
+          or (previous and (expression_prefix[previous.upper] or previous.upper == "AS"
             or previous.kind:match("^[=+*/%%<>!~|&^,:@-]$")))
         if not operand then
           -- A real trailing clause cannot precede the statement's WHERE.
@@ -407,7 +439,7 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
     result.assignments[slot] = { column = column, value = value, known = known }
   end
   if set_start then
-    local finish = (where_idx or tail_idx or (last + 1)) - 1
+    local finish = (output_idx or where_idx or tail_idx or (last + 1)) - 1
     if finish < set_start then return reject() end
     local first = set_start
     for idx = first, finish do
