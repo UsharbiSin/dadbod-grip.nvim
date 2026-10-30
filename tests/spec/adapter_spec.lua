@@ -656,6 +656,85 @@ test("mysql execute: DEFAULT VALUES is rewritten", function()
   end)
 end)
 
+-- Exercise the actual CLI stdin boundary, including MariaDB's shared adapter.
+for _, scheme in ipairs({ "mysql", "mariadb" }) do
+  for _, statement in ipairs({
+    "INSERT INTO t (name) VALUES ('DEFAULT VALUES')",
+    "UPDATE t SET name='DEFAULT VALUES' WHERE name='DEFAULT VALUES'",
+    [[INSERT INTO "DEFAULT VALUES" (name) VALUES ('x')]],
+    "INSERT INTO t (name) VALUES ('DEFAULT VALUES; INSERT INTO t DEFAULT VALUES')",
+    "UPDATE t SET name='x' /* DEFAULT VALUES */",
+    "UPDATE t SET name='x' # DEFAULT VALUES",
+    "INSERT INTO t VALUES ('DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES unexpected",
+    "SELECT (1; INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES; SELECT (1",
+    "INSERT /*! IGNORE */ INTO t DEFAULT VALUES",
+    "INSERT /*M! IGNORE */ INTO t DEFAULT VALUES",
+    [[SET sql_mode=''; UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    "INSERT INTO t DEFAULT VALUES; SET @value='DEFAULT VALUES'",
+    "SELECT DEFAULT VALUES",
+  }) do
+    test(scheme .. " execute: preserve non-clause text: " .. statement, function()
+      with_executable(function()
+        local _, opts, calls = capture_system_call("ROW_COUNT()\n1\n", function()
+          assert(mysql.execute(statement, scheme .. "://unused/fixture"))
+        end)
+        eq(opts.stdin, "SET sql_mode='ANSI_QUOTES,NO_BACKSLASH_ESCAPES';\n"
+          .. statement .. "\n; SELECT ROW_COUNT();", "original SQL bytes")
+        eq(calls, 1, "one CLI invocation")
+      end)
+    end)
+  end
+  test(scheme .. " execute: convert only generated default inserts in a batch", function()
+    local statement = 'INSERT INTO "my db"."my table" DEFAULT VALUES;\n'
+      .. "UPDATE t SET name='DEFAULT VALUES';\n"
+      .. "/* DEFAULT VALUES */ INSERT INTO t DEFAULT VALUES;\n"
+      .. "REPLACE INTO t DEFAULT VALUES; -- DEFAULT VALUES"
+    local expected = 'INSERT INTO "my db"."my table" () VALUES ();\n'
+      .. "UPDATE t SET name='DEFAULT VALUES';\n"
+      .. "/* DEFAULT VALUES */ INSERT INTO t () VALUES ();\n"
+      .. "REPLACE INTO t () VALUES (); -- DEFAULT VALUES"
+    with_executable(function()
+      local _, opts, calls = capture_system_call("ROW_COUNT()\n1\n", function()
+        assert(mysql.execute(statement, scheme .. "://unused/fixture"))
+      end)
+      eq(opts.stdin, "SET sql_mode='ANSI_QUOTES,NO_BACKSLASH_ESCAPES';\n"
+        .. expected .. "\n; SELECT ROW_COUNT();", "only complete default clauses rewritten")
+      eq(calls, 1, "one CLI invocation")
+    end)
+  end)
+end
+
+test("mysql default conversion honors the known no-backslash session mode", function()
+  local statement = [[UPDATE t SET name='foo\'; INSERT INTO t DEFAULT VALUES]]
+  local lexer = require("dadbod-grip.sql_tokens")
+  eq(lexer.tokenize(statement, "mysql", true), nil, "generic lexer remains conservative")
+  with_executable(function()
+    local _, opts = capture_system_call("ROW_COUNT()\n1\n", function()
+      assert(mysql.execute(statement, "mysql://unused/fixture"))
+    end)
+    eq(opts.stdin, "SET sql_mode='ANSI_QUOTES,NO_BACKSLASH_ESCAPES';\n"
+      .. [[UPDATE t SET name='foo\'; INSERT INTO t () VALUES ()]]
+      .. "\n; SELECT ROW_COUNT();", "preserve literal and convert subsequent generated insert")
+  end)
+end)
+
+test("mysql execute: ordinary SQL does not tokenize for default conversion", function()
+  local lexer = require("dadbod-grip.sql_tokens")
+  local tokenize = lexer.tokenize
+  lexer.tokenize = function() error("ordinary execute must not tokenize") end
+  local ok, err = pcall(function()
+    with_executable(function()
+      with_system_mock("ROW_COUNT()\n1\n", "", 0, function()
+        assert(mysql.execute("INSERT INTO t (name) VALUES ('x')", "mysql://unused/fixture"))
+      end)
+    end)
+  end)
+  lexer.tokenize = tokenize
+  if not ok then error(err) end
+end)
+
 test("mysql execute: non-DEFAULT-VALUES SQL unchanged", function()
   with_executable(function()
     local captured_args

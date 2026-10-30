@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mutation previews parse UPDATE, DELETE, INSERT, and REPLACE with shared SQL
   tokens. Target aliases, quoted names, comments, nested expressions, and
   RETURNING no longer corrupt predicates, column mappings, or VALUES rows.
+  SQL Server OUTPUT clauses stay out of preview queries and SET values;
+  optional INTO/FROM spellings retain their target table.
   UPDATE staging preserves NULL versus empty strings and the last assignment.
   INSERT preserves column order and positional NULLs; SQLite/DuckDB INSERT OR
   forms, DuckDB BY NAME/POSITION and FROM-first queries, parenthesized source
@@ -26,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Alias completion recognizes mutation targets and MySQL inserted-row aliases,
   including column renames, while ignoring strings and comments. The alias
   cache is shared by completion providers and follows connection changes.
+  SQLite UPDATE OR modifiers and MySQL/MariaDB priority and PARTITION clauses
+  no longer hide target aliases; SQL Server clause keywords are not aliases.
+- MySQL/MariaDB default-row compatibility rewriting preserves DEFAULT VALUES
+  inside strings, quoted identifiers, and comments.
 - Build mutation preview staging in one pass instead of repeatedly copying
   prior changes. Shared SQL tokenization scans words, strings, and comments
   in chunks while preserving the existing SELECT editability checks.

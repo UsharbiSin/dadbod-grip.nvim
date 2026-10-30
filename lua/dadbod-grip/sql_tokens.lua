@@ -13,7 +13,8 @@ word_start[95] = true
 -- same MySQL comment rules without allocating unused positions. Partial mode
 -- returns only complete prefix tokens if editing stops inside a token
 -- or comment; SQL execution and editability checks always use strict mode.
-function M.tokenize(sql_text, adapter_kind, with_positions, partial)
+-- no_backslash_escapes is only for callers that enforce this MySQL session mode.
+function M.tokenize(sql_text, adapter_kind, with_positions, partial, no_backslash_escapes)
   local tokens, count = {}, 0
   local i, len = 1, #sql_text
   local positions = with_positions == true
@@ -77,7 +78,8 @@ function M.tokenize(sql_text, adapter_kind, with_positions, partial)
           if i > len then return nil, true end
           i = i + 1
         elseif odd and sql_text:byte(i) == 39
-            and (adapter_kind == "postgresql" or adapter_kind == "mysql") then
+            and (adapter_kind == "postgresql"
+              or (adapter_kind == "mysql" and not no_backslash_escapes)) then
           -- Session settings can change this quote's closing boundary.
           return nil
         end

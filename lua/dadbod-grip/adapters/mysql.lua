@@ -527,6 +527,57 @@ function M.get_table_stats(table_name, url)
   }, nil
 end
 
+-- The grid emits generic INSERT ... DEFAULT VALUES for an empty new row.
+-- Only translate that complete clause, never matching text inside user data.
+local function normalize_default_values(sql_str)
+  if not sql_str:find("DEFAULT VALUES", 1, true) then return sql_str end
+  -- mysql_stdin enforces NO_BACKSLASH_ESCAPES for this execution.
+  local tokens = require("dadbod-grip.sql_tokens").tokenize(sql_str, "mysql", true, false, true)
+  if not tokens then return sql_str end
+  local chunks, copied, first, depth = {}, 1, 1, 0
+  for finish = 1, #tokens + 1 do
+    local token = tokens[finish]
+    if token and token.kind == "(" then
+      depth = depth + 1
+    elseif token and token.kind == ")" then
+      depth = depth - 1
+      if depth < 0 then return sql_str end
+    end
+    if finish > #tokens or token.kind == ";" then
+      if depth ~= 0 then return sql_str end
+      local pos = first
+      local verb = tokens[pos] and tokens[pos].upper
+      -- A caller's SET may change sql_mode after mysql_stdin's setup, making
+      -- later string boundaries uncertain. Grid-generated batches need no SET.
+      if verb == "SET" then return sql_str end
+      if verb == "INSERT" or verb == "REPLACE" then
+        pos = pos + 1
+        while tokens[pos] and (tokens[pos].upper == "LOW_PRIORITY"
+            or tokens[pos].upper == "DELAYED"
+            or (verb == "INSERT" and (tokens[pos].upper == "HIGH_PRIORITY"
+              or tokens[pos].upper == "IGNORE"))) do pos = pos + 1 end
+        if tokens[pos] and tokens[pos].upper == "INTO" then pos = pos + 1 end
+        if tokens[pos] and tokens[pos].kind == "ident" then
+          pos = pos + 1
+          while tokens[pos] and tokens[pos].kind == "."
+              and tokens[pos + 1] and tokens[pos + 1].kind == "ident" do pos = pos + 2 end
+          if pos + 2 == finish and tokens[pos].upper == "DEFAULT"
+              and tokens[pos + 1].upper == "VALUES"
+              and sql_str:sub(tokens[pos].start, tokens[pos + 1].finish) == "DEFAULT VALUES" then
+            chunks[#chunks + 1] = sql_str:sub(copied, tokens[pos].start - 1)
+            chunks[#chunks + 1] = "() VALUES ()"
+            copied = tokens[pos + 1].finish + 1
+          end
+        end
+      end
+      first = finish + 1
+    end
+  end
+  if #chunks == 0 then return sql_str end
+  chunks[#chunks + 1] = sql_str:sub(copied)
+  return table.concat(chunks)
+end
+
 function M.execute(sql_str, url)
   if vim.fn.executable("mysql") == 0 then
     return nil, "mysql not found. Install mysql-client."
@@ -535,8 +586,7 @@ function M.execute(sql_str, url)
   local parsed = parse_url(url)
   if not parsed then return nil, "Invalid MySQL URL: " .. sql_util.redact_url(url) end
 
-  -- MySQL doesn't support DEFAULT VALUES; rewrite for compatibility
-  sql_str = sql_str:gsub("DEFAULT VALUES", "() VALUES ()")
+  sql_str = normalize_default_values(sql_str)
 
   -- mysql --batch prints no "N rows affected" line anywhere (that needs -vv), so
   -- ask the server for the count instead, the way sqlite appends changes().
