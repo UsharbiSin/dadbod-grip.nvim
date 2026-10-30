@@ -9,15 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- UPDATE and DELETE previews retain target aliases and quoted identifiers,
-  including comments around aliases. Clause and assignment parsing respects
-  strings, comments, and nested expressions; line comments keep their original
-  newline boundaries so the preview does not silently drop predicates.
-  Literal assignments (including commas, escaped quotes, and NULL) are staged
-  on the correct columns. Computed expressions remain unstaged until execution.
-  RETURNING stays in the original mutation rather than the preview SELECT.
-  Unsupported multi-source previews are rejected instead of guessing rows.
+- Mutation previews parse UPDATE, DELETE, INSERT, and REPLACE with shared SQL
+  tokens. Target aliases, quoted names, comments, nested expressions, and
+  RETURNING no longer corrupt predicates, column mappings, or VALUES rows.
+  UPDATE staging preserves NULL versus empty strings and the last assignment.
+  INSERT preserves column order and positional NULLs; SQLite INSERT OR forms
+  and MySQL VALUE, SET, and row/column aliases are recognized.
+- UPSERT, REPLACE, ignored conflicts, defaults, and computed/source-query
+  inserts show current data without predicting new values or affected counts.
+  Confirmation executes the original SQL once; completed writes report the
+  adapter's affected count. Unsupported or multiple-statement previews fail
+  without writing. Committed transaction previews retain their complete SQL;
+  rollback blocks cannot be stripped into committed mutations.
 - Column completion resolves UPDATE target aliases written without AS.
+- Build mutation preview staging in one pass instead of repeatedly copying
+  prior changes. Shared SQL tokenization scans words, strings, and comments
+  in chunks while preserving the existing SELECT editability checks.
 
 ## [3.16.0] - 2026-10-17
 

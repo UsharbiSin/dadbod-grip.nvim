@@ -256,6 +256,127 @@ test("unaliased DELETE remains executable", function()
   apply(sql, session, { { "1", "one" }, { "3", "three" } })
 end)
 
+for _, case in ipairs({
+  { set = "value='fake', value=upper(value)", expected = "TWO" },
+  { set = "value='fake', value='last'", staged = "last", expected = "last" },
+  { set = "VaLuE='mixed'", staged = "mixed", expected = "mixed" },
+  { set = "value=''", staged = "", expected = "" },
+}) do
+  test("UPDATE assignment semantics: " .. case.set, function()
+    local sql = "UPDATE items AS i SET " .. case.set .. " WHERE i.id=2"
+    local session = preview(sql, 1)
+    eq(session.state.changes, case.staged ~= nil and { { value = case.staged } } or {},
+      "only the final known literal is staged")
+    apply(sql, session, { { "1", "one" }, { "2", case.expected }, { "3", "three" } })
+  end)
+end
+
+test("OUTPUT is an ordinary SQLite column", function()
+  assert(db.execute("ALTER TABLE items ADD COLUMN output TEXT", url))
+  calls = {}
+  local sql = "UPDATE items SET output='known' WHERE id=2"
+  local session = preview(sql, 1)
+  eq(session.state.changes[1], { output = "known" }, "OUTPUT literal staged")
+  apply(sql, session, initial)
+  eq(assert(db.query("SELECT output FROM items WHERE id=2", url)).rows, { { "known" } },
+    "actual OUTPUT column changed")
+end)
+
+for _, case in ipairs({
+  { sql = "/* target */ UPDATE items AS i SET value='changed' WHERE i.id=2", verb = "UPDATE" },
+  { sql = "-- target\nDELETE FROM items AS i WHERE i.id=2", verb = "DELETE" },
+}) do
+  test("leading comments dispatch " .. case.verb, function()
+    local session = preview(case.sql, 1)
+    apply(case.sql, session, case.verb == "DELETE" and { { "1", "one" }, { "3", "three" } }
+      or { { "1", "one" }, { "2", "changed" }, { "3", "three" } })
+  end)
+end
+
+for _, begin in ipairs({ "BEGIN", "begin", "BEGIN IMMEDIATE" }) do
+  test("transaction preview preserves complete original SQL: " .. begin, function()
+    local sql = begin .. ";\nUPDATE items AS i SET value='changed' WHERE i.id=2;\ncommit; -- end"
+    local session = preview(sql, 1)
+    apply(sql, session, { { "1", "one" }, { "2", "changed" }, { "3", "three" } })
+  end)
+end
+
+for _, sql in ipairs({
+  "BEGIN; UPDATE items SET value='changed' WHERE id=2; ROLLBACK;",
+  "begin; UPDATE items SET value='changed' WHERE id=2; rollback;",
+  "BEGIN; UPDATE items SET value='changed'; DELETE FROM items; COMMIT;",
+}) do
+  test("transaction must not drop rollback or additional statements: " .. sql, function()
+    grip.open(sql, url, { from_pad = true })
+    eq(calls, {}, "rejected block never executes")
+    eq(rows(), initial, "rejected block leaves database unchanged")
+    assert(#notices > 0, "unsupported block must report rejection")
+    for _, session in pairs(view._sessions) do
+      eq(session.pending_mutation, nil, "no misleading pending statement")
+    end
+  end)
+end
+
+for _, sql in ipairs({
+  'WITH "delete" AS (SELECT 1) SELECT * FROM "delete"',
+  "WITH replace AS (SELECT 1) SELECT * FROM replace",
+  "WITH t AS (SELECT 1 AS replace) SELECT replace FROM t",
+  "WITH t AS (SELECT replace('update','up','down')) SELECT * FROM t",
+  "WITH t AS (SELECT 1 /* INSERT INTO fake */) SELECT * FROM t",
+}) do
+  test("read-only CTE keywords are not mutation commands: " .. sql, function()
+    local spec, _, _, mutation = grip._resolve_query(sql, 100, "sqlite")
+    assert(spec and spec.is_raw, "ordinary CTE stays a query")
+    eq(mutation, nil, "no false mutation")
+  end)
+end
+
+test("WITH REPLACE retains confirmed original-SQL execution", function()
+  local sql = "WITH src AS (SELECT 2 AS id, 'changed' AS value) REPLACE INTO items SELECT * FROM src;"
+  local spec, _, _, mutation = grip._resolve_query(sql, 100, "sqlite")
+  eq(spec, nil, "mutating CTE is not wrapped in SELECT")
+  eq(mutation, sql, "complete CTE retained")
+  grip.open(sql, url, { from_pad = true })
+  eq(calls, { sql }, "confirmed CTE executes once")
+  eq(rows(), { { "1", "one" }, { "2", "changed" }, { "3", "three" } }, "REPLACE result")
+  eq(notices, {}, "CTE warnings/errors")
+end)
+
+for _, case in ipairs({
+  { set = "value='fake', (value,output)=('actual','third')", expected = "actual" },
+  { set = "(value,output)=('actual','third'), value='last'", staged = "last", expected = "last" },
+}) do
+  test("tuple assignments invalidate earlier scalar predictions: " .. case.set, function()
+    assert(db.execute("ALTER TABLE items ADD COLUMN output TEXT", url))
+    calls = {}
+    local sql = "UPDATE items SET " .. case.set .. " WHERE id=2"
+    local session = preview(sql, 1)
+    eq(session.state.changes, case.staged and { { value = case.staged } } or {},
+      "only a later scalar literal can be predicted after a tuple assignment")
+    apply(sql, session, { { "1", "one" }, { "2", case.expected }, { "3", "three" } })
+    eq(assert(db.query("SELECT output FROM items WHERE id=2", url)).rows, { { "third" } },
+      "tuple's other column is evaluated by SQLite")
+  end)
+end
+
+test("PostgreSQL subscripts invalidate earlier scalar predictions", function()
+  local sql = "UPDATE items SET value='fake', value[1]='actual' WHERE id=2"
+  local tokens = require("dadbod-grip.sql_tokens").tokenize(sql, "postgresql", true)
+  local parsed = assert(require("dadbod-grip.mutation").parse(sql, tokens, "postgresql", "UPDATE"))
+  eq(parsed.assignments, {}, "an array subscript can overwrite the earlier whole-column value")
+end)
+
+for _, case in ipairs({
+  { begin = "BEGIN IMMEDIATE TRANSACTION", finish = "COMMIT TRANSACTION" },
+  { begin = "BEGIN", finish = "END" },
+}) do
+  test("transaction keyword variants retain original SQL: " .. case.begin .. "/" .. case.finish, function()
+    local sql = case.begin .. "; UPDATE items SET value='changed' WHERE id=2; " .. case.finish .. ";"
+    local session = preview(sql, 1)
+    apply(sql, session, { { "1", "one" }, { "2", "changed" }, { "3", "three" } })
+  end)
+end
+
 cleanup()
 db.execute, vim.notify, vim.fn.confirm = execute, notify, confirm
 vim.cmd.cd(vim.fn.fnameescape(cwd))

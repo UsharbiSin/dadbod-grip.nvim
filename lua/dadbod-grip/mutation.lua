@@ -1,4 +1,4 @@
--- Parse only single-target UPDATE/DELETE previews. Token positions let us keep
+-- Parse single-target mutation previews. Token positions let us keep
 -- predicate text intact while ignoring keywords inside comments or expressions.
 local sql = require("dadbod-grip.sql")
 local M = {}
@@ -21,8 +21,9 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
   local function reject()
     return nil, "Cannot safely preview this mutation; use a single target table"
   end
+  local inserting = stmt_type == "INSERT" or stmt_type == "REPLACE"
   if not tokens or not tokens[1] or tokens[1].upper ~= stmt_type
-      or (stmt_type ~= "UPDATE" and stmt_type ~= "DELETE") then return reject() end
+      or (not inserting and stmt_type ~= "UPDATE" and stmt_type ~= "DELETE") then return reject() end
 
   local function raw(first, last)
     return text:sub(tokens[first].start, tokens[last or first].finish)
@@ -49,13 +50,15 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
 
   -- A single terminal semicolon is allowed. Never preview only one statement
   -- while retaining multiple statements in the SQL offered for execution.
-  local depth, stack, last = {}, {}, #tokens
+  local depth, stack, matching, last = {}, {}, {}, #tokens
   for idx, token in ipairs(tokens) do
     depth[idx] = #stack
     if token.kind == "(" or token.kind == "[" or token.kind == "{" then
-      stack[#stack + 1] = token.kind
+      stack[#stack + 1] = idx
     elseif closes[token.kind] then
-      if stack[#stack] ~= closes[token.kind] then return reject() end
+      local opener = stack[#stack]
+      if not opener or tokens[opener].kind ~= closes[token.kind] then return reject() end
+      matching[opener] = idx
       stack[#stack] = nil
     elseif token.kind == ";" then
       if #stack > 0 or idx ~= #tokens then return reject() end
@@ -65,7 +68,25 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
   if #stack > 0 then return reject() end
 
   local pos, delete_target = 2, nil
-  if stmt_type == "DELETE" then
+  local current_state = stmt_type == "REPLACE"
+  if inserting then
+    if adapter_kind == "sqlite" and tokens[pos] and tokens[pos].upper == "OR" then
+      local action = tokens[pos + 1] and tokens[pos + 1].upper
+      if not ({ ROLLBACK = true, ABORT = true, FAIL = true, IGNORE = true, REPLACE = true })[action] then
+        return reject()
+      end
+      current_state, pos = true, pos + 2
+    elseif adapter_kind == "mysql" then
+      while tokens[pos] and ({ LOW_PRIORITY = true, HIGH_PRIORITY = true,
+          DELAYED = true, IGNORE = true })[tokens[pos].upper] do
+        if tokens[pos].upper == "IGNORE" or tokens[pos].upper == "DELAYED" then current_state = true end
+        pos = pos + 1
+      end
+    end
+    if tokens[pos] and tokens[pos].upper == "INTO" then
+      pos = pos + 1
+    elseif adapter_kind ~= "mysql" then return reject() end
+  elseif stmt_type == "DELETE" then
     if tokens[pos] and tokens[pos].upper ~= "FROM" then
       if tokens[pos].kind ~= "ident" then return reject() end
       delete_target = tokens[pos]
@@ -98,14 +119,170 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
     pos = pos + 1
     if not tokens[pos] or tokens[pos].kind ~= "ident" then return reject() end
     alias = tokens[pos]
-  elseif tokens[pos] and tokens[pos].kind == "ident" and not clauses[tokens[pos].upper] then
+  elseif not inserting and tokens[pos] and tokens[pos].kind == "ident" and not clauses[tokens[pos].upper] then
     alias = tokens[pos]
   end
   if alias then
-    source_sql = source_sql .. " AS " .. raw(pos)
+    if not inserting then source_sql = source_sql .. " AS " .. raw(pos) end
     pos = pos + 1
   end
   if delete_target and not same(delete_target, alias or target[#target]) then return reject() end
+
+  -- Only literals have a known new value without executing the mutation.
+  -- Expressions and subqueries remain unstaged rather than displaying SQL as data.
+  local function literal(first, finish)
+    if first > finish then return false end
+    local token, value = tokens[first], raw(first, finish)
+    if first == finish then
+      if token.upper == "NULL" then return true, nil end
+      if token.kind == "literal" and value:sub(1, 1) == "'" then
+        if token.escape_string or ((adapter_kind == "mysql" or adapter_kind == "postgresql")
+            and value:find("\\", 1, true)) then return false end
+        return true, token.text
+      end
+      if token.kind == "literal" and value:match("^%$") then
+        local delimiter = value:match("^(%$[%w_]*%$)")
+        if delimiter then return true, value:sub(#delimiter + 1, -#delimiter - 1) end
+      end
+    end
+    if value:match("^[+-]?%d+%.?%d*$") or value:match("^[+-]?%.%d+$")
+        or value:match("^[+-]?%d+%.?%d*[eE][+-]?%d+$") then return true, value end
+    return false
+  end
+
+
+  if inserting then
+    local result = {
+      table_name = table_name, source_sql = source_sql,
+      insert_values = {}, current_state = current_state,
+    }
+
+    -- Parse identifier lists only at their grammatical position. Parentheses
+    -- inside quoted aliases and strings cannot become a column or VALUES list.
+    local function identifiers(first)
+      local close = matching[first]
+      if not close then return nil end
+      local fields, next_pos, seen = {}, first + 1, {}
+      while next_pos < close do
+        local token = tokens[next_pos]
+        if token.kind ~= "ident" then return nil end
+        local field = name(token)
+        if seen[field] then return nil end
+        fields[#fields + 1], seen[field] = field, true
+        next_pos = next_pos + 1
+        if next_pos < close then
+          if tokens[next_pos].kind ~= "," then return nil end
+          next_pos = next_pos + 1
+          if next_pos == close then return nil end
+        end
+      end
+      if #fields == 0 then return nil end
+      return fields, close + 1
+    end
+
+    if adapter_kind == "mysql" and tokens[pos] and tokens[pos].upper == "PARTITION" then
+      local parts, next_pos = identifiers(pos + 1)
+      if not parts then return reject() end
+      pos, result.current_state = next_pos, true
+    end
+    if tokens[pos] and tokens[pos].kind == "(" then
+      result.insert_columns, pos = identifiers(pos)
+      if not result.insert_columns then return reject() end
+    end
+
+    local body = tokens[pos] and tokens[pos].upper
+    if body == "SELECT" or body == "WITH" or body == "TABLE" or body == "OVERRIDING" then
+      -- Source queries and identity overrides cannot be predicted without
+      -- executing SQL. The preview shows the current target table only.
+      result.current_state = true
+      return result
+    elseif body == "DEFAULT" and tokens[pos + 1] and tokens[pos + 1].upper == "VALUES" then
+      result.current_state, pos = true, pos + 2
+    elseif body == "VALUES" or (body == "VALUE" and adapter_kind == "mysql") then
+      pos = pos + 1
+      repeat
+        if adapter_kind == "mysql" and tokens[pos] and tokens[pos].upper == "ROW" then pos = pos + 1 end
+        if not tokens[pos] or tokens[pos].kind ~= "(" then return reject() end
+        local close, first, count, values = matching[pos], pos + 1, 0, {}
+        if not close then return reject() end
+        for idx = first, close do
+          if idx == close or (depth[idx] == depth[pos] + 1 and tokens[idx].kind == ",") then
+            if first == idx then
+              -- MySQL's VALUES () uses defaults; never display them as NULL.
+              if idx ~= close or count ~= 0 then return reject() end
+              result.current_state = true
+            else
+              count = count + 1
+              local known, value = literal(first, idx - 1)
+              if not known then result.current_state = true end
+              values[count] = value
+            end
+            first = idx + 1
+          end
+        end
+        if result.insert_columns and count ~= #result.insert_columns then return reject() end
+        values.n = count -- Preserve positional NULLs; Lua's length drops holes.
+        result.insert_values[#result.insert_values + 1] = values
+        pos = close + 1
+        if not tokens[pos] or tokens[pos].kind ~= "," then break end
+        pos = pos + 1
+      until false
+    elseif body == "SET" and adapter_kind == "mysql" then
+      if result.insert_columns then return reject() end
+      local fields, values, seen, first, finish = {}, {}, {}, pos + 1, last
+      for idx = first, last do
+        local token = tokens[idx]
+        if depth[idx] == 0 and (token.upper == "AS" or token.upper == "ON"
+            or token.upper == "RETURNING") and tokens[idx - 1].kind ~= "="
+            and tokens[idx - 1].kind ~= "," and tokens[idx - 1].kind ~= "." then
+          finish = idx - 1
+          break
+        end
+      end
+      for idx = first, finish + 1 do
+        if idx == finish + 1 or (depth[idx] == 0 and tokens[idx].kind == ",") then
+          local field = tokens[first]
+          if not field or field.kind ~= "ident" or not tokens[first + 1]
+              or tokens[first + 1].kind ~= "=" or first + 2 >= idx then return reject() end
+          local column = name(field)
+          if seen[column] then result.current_state = true end
+          seen[column], fields[#fields + 1] = true, column
+          local known, value = literal(first + 2, idx - 1)
+          if not known then result.current_state = true end
+          values[#fields] = value
+          first = idx + 1
+        end
+      end
+      values.n = #fields
+      result.insert_columns, result.insert_values, pos = fields, { values }, finish + 1
+    else
+      return reject()
+    end
+
+    -- MySQL row/column aliases describe the VALUES output, not additional rows.
+    if adapter_kind == "mysql" and tokens[pos] and tokens[pos].upper == "AS" then
+      if not tokens[pos + 1] or tokens[pos + 1].kind ~= "ident" then return reject() end
+      pos = pos + 2
+      if tokens[pos] and tokens[pos].kind == "(" then
+        local fields, next_pos = identifiers(pos)
+        if not fields then return reject() end
+        pos = next_pos
+      end
+    end
+    if pos <= last then
+      if tokens[pos].upper == "ON"
+          and ((tokens[pos + 1] and tokens[pos + 1].upper == "CONFLICT")
+            or (tokens[pos + 1] and tokens[pos + 1].upper == "DUPLICATE"
+              and tokens[pos + 2] and tokens[pos + 2].upper == "KEY"
+              and tokens[pos + 3] and tokens[pos + 3].upper == "UPDATE")) then
+        result.current_state = true
+      elseif tokens[pos].upper ~= "RETURNING" then
+        return reject()
+      end
+    end
+    if result.current_state then result.insert_values = {} end
+    return result
+  end
 
   local set_start
   if stmt_type == "UPDATE" then
@@ -128,7 +305,7 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
       -- UPDATE FROM adds another source, but DISTINCT FROM is an expression
       -- operator. Once WHERE starts, source clauses can only be nested queries.
       if not where_idx and ((keyword == "FROM" and tokens[idx - 1].upper ~= "DISTINCT")
-          or keyword == "OUTPUT") then return reject() end
+          or (keyword == "OUTPUT" and adapter_kind == "sqlserver")) then return reject() end
       if keyword == "WHERE" then
         if where_idx then return reject() end
         where_idx = idx
@@ -167,31 +344,16 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
     result.where = vim.trim(text:sub(tokens[where_idx].finish + 1, finish))
   end
 
-  -- Only literals have a known new value without executing the mutation.
-  -- Expressions and subqueries remain unstaged rather than displaying SQL as data.
-  local function literal(first, finish)
-    if first > finish then return false end
-    local token, value = tokens[first], raw(first, finish)
-    if first == finish then
-      if token.upper == "NULL" then return true, nil end
-      if token.kind == "literal" and value:sub(1, 1) == "'" then
-        if token.escape_string or ((adapter_kind == "mysql" or adapter_kind == "postgresql")
-            and value:find("\\", 1, true)) then return false end
-        return true, token.text
-      end
-      if token.kind == "literal" and value:match("^%$") then
-        local delimiter = value:match("^(%$[%w_]*%$)")
-        if delimiter then return true, value:sub(#delimiter + 1, -#delimiter - 1) end
-      end
-    end
-    if value:match("^[+-]?%d+%.?%d*$") or value:match("^[+-]?%.%d+$")
-        or value:match("^[+-]?%d+%.?%d*[eE][+-]?%d+$") then return true, value end
-    return false
-  end
-
+  local assignment_slots = {}
   local function assignment(first, finish)
     local fields, next_pos = path(first)
-    if not fields or next_pos > finish or tokens[next_pos].kind ~= "=" then return end
+    if not fields or next_pos > finish or tokens[next_pos].kind ~= "=" then
+      -- Tuple/subscript targets may overwrite a scalar already encountered.
+      -- Their full target set is not represented here, so discard earlier
+      -- predictions; subsequent simple literal assignments can still be staged.
+      result.assignments, assignment_slots = {}, {}
+      return
+    end
     if #fields > 1 then
       local qualifiers = alias and { alias } or target
       local matches = #fields - 1 == #qualifiers
@@ -203,10 +365,13 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
       if not matches and not alias and #fields == 2 then matches = same(fields[1], target[#target]) end
       if not matches then return end
     end
+    local column = name(fields[#fields])
+    local key = adapter_kind == "postgresql" and column or column:lower()
+    local slot = assignment_slots[key] or (#result.assignments + 1)
+    assignment_slots[key] = slot
     local known, value = literal(next_pos + 1, finish)
-    if known then
-      result.assignments[#result.assignments + 1] = { column = name(fields[#fields]), value = value }
-    end
+    -- A later assignment wins, including one whose value cannot be predicted.
+    result.assignments[slot] = { column = column, value = value, known = known }
   end
   if set_start then
     local finish = (where_idx or tail_idx or (last + 1)) - 1
@@ -219,6 +384,14 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
       end
     end
     assignment(first, finish)
+    local literals = {}
+    for _, entry in ipairs(result.assignments) do
+      if entry.known then
+        entry.known = nil
+        literals[#literals + 1] = entry
+      end
+    end
+    result.assignments = literals
   end
   return result
 end
