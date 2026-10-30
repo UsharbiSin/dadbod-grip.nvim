@@ -96,6 +96,8 @@ local _ALIAS_KEYWORDS = {
 local insert_modifiers = {
   LOW_PRIORITY=1, DELAYED=1, HIGH_PRIORITY=1, IGNORE=1,
 }
+local update_modifiers = { LOW_PRIORITY=1, IGNORE=1 }
+local sqlite_conflicts = { ROLLBACK=1, ABORT=1, FAIL=1, IGNORE=1, REPLACE=1 }
 
 local function identifier(token)
   return token and token.kind == "ident" and not _ALIAS_KEYWORDS[token.upper]
@@ -143,6 +145,32 @@ local function column_list(tokens, pos)
   end
   return nil, pos
 end
+-- SQL Server's first DELETE FROM names the target, where OUTPUT/OPTION
+-- are clauses. Later FROM sources still allow ordinary aliases such as output.
+local function delete_from_target(tokens, from_pos, matching)
+  local pos = from_pos - 1
+  if tokens[pos] and tokens[pos].upper == "PERCENT" then pos = pos - 1 end
+  if tokens[pos] and tokens[pos].kind == ")" then
+    -- Build this map only for an ambiguous SQL Server source. Repeated nested
+    -- SELECT aliases named OUTPUT must not rescan the same parentheses.
+    if not matching then
+      matching = {}
+      local stack = {}
+      for idx, token in ipairs(tokens) do
+        if token.kind == "(" then stack[#stack + 1] = idx
+        elseif token.kind == ")" and #stack > 0 then
+          matching[idx], stack[#stack] = stack[#stack], nil
+        end
+      end
+    end
+    local opening = matching[pos]
+    pos = opening and opening - 1 or 0
+    if not tokens[pos] or tokens[pos].upper ~= "TOP" then return false, matching end
+    pos = pos - 1
+  end
+  return tokens[pos] and tokens[pos].upper == "DELETE", matching
+end
+
 local function insert_aliases(tokens, aliases, explicit, pos)
   if tokens[pos] and tokens[pos].upper == "OR" then pos = pos + 2 end
   while tokens[pos] and insert_modifiers[tokens[pos].upper] do pos = pos + 1 end
@@ -196,6 +224,7 @@ function M.extract_aliases(sql_text, adapter_kind)
   local tokens = require("dadbod-grip.sql_tokens").tokenize(sql_text, adapter_kind, "completion", true)
   if not tokens then return {} end
   local aliases, explicit = {}, {}
+  local closing_parens
   for idx, token in ipairs(tokens) do
     local previous = tokens[idx - 1]
     if not previous or previous.kind ~= "." then
@@ -207,9 +236,29 @@ function M.extract_aliases(sql_text, adapter_kind)
         local source_pos = idx + 1
         if adapter_kind == "postgresql" and tokens[source_pos] and tokens[source_pos].upper == "ONLY" then
           source_pos = source_pos + 1
+        elseif update_target and adapter_kind == "sqlite"
+            and tokens[source_pos] and tokens[source_pos].upper == "OR" then
+          local action = tokens[source_pos + 1]
+          source_pos = action and sqlite_conflicts[action.upper] and source_pos + 2 or #tokens + 1
+        elseif update_target and adapter_kind == "mysql" then
+          while tokens[source_pos] and update_modifiers[tokens[source_pos].upper] do
+            source_pos = source_pos + 1
+          end
         end
         local target, pos = alias_source(tokens, source_pos)
-        if target then target_alias(tokens, aliases, explicit, target, pos, true) end
+        if target then
+          if adapter_kind == "mysql" and tokens[pos] and tokens[pos].upper == "PARTITION" then
+            local partitions, after = column_list(tokens, pos + 1)
+            pos = partitions and after or #tokens + 1
+          end
+          local clause = tokens[pos] and tokens[pos].upper
+          local is_clause = false
+          if adapter_kind == "sqlserver" and keyword == "FROM"
+              and (clause == "OUTPUT" or clause == "OPTION") then
+            is_clause, closing_parens = delete_from_target(tokens, idx, closing_parens)
+          end
+          if not is_clause then target_alias(tokens, aliases, explicit, target, pos, true) end
+        end
       elseif keyword == "INSERT" or keyword == "REPLACE" then
         insert_aliases(tokens, aliases, explicit, idx + 1)
       end

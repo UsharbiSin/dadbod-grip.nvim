@@ -1002,6 +1002,74 @@ for _, suffix in ipairs({ "1e", "1e+", "$tag", "$" }) do
   eq(aliases.i, "items", "unfinished scalar prefix keeps source aliases: " .. suffix)
 end
 
+-- Mutation modifiers occupy source positions, never alias positions.
+for _, action in ipairs({ "ROLLBACK", "ABORT", "FAIL", "IGNORE", "REPLACE" }) do
+  local aliases = ea("UPDATE OR " .. action .. " items AS i SET value='x' WHERE i.", "sqlite")
+  eq(aliases.i, "items", "SQLite UPDATE OR " .. action .. " resolves target alias")
+  eq(aliases[action:lower()], nil, "SQLite conflict action is not a source alias")
+end
+for _, modifiers in ipairs({ "LOW_PRIORITY", "IGNORE", "LOW_PRIORITY IGNORE" }) do
+  local aliases = ea("UPDATE " .. modifiers .. " items AS i SET value='x' WHERE i.", "mysql")
+  eq(aliases.i, "items", "MySQL UPDATE modifiers preserve target alias: " .. modifiers)
+  eq(aliases.items, nil, "MySQL UPDATE modifier is not a target name: " .. modifiers)
+end
+for _, prefix in ipairs({ "UPDATE", "DELETE FROM", "SELECT i.id FROM" }) do
+  local aliases = ea(prefix .. " items PARTITION(p0,p1) AS i WHERE i.", "mysql")
+  eq(aliases.i, "items", "partition list precedes target alias: " .. prefix)
+  eq(aliases.partition, nil, "partition clause is not a bare alias: " .. prefix)
+end
+eq(ea("UPDATE items PARTITION(p0", "mysql").partition, nil,
+  "unfinished partition list does not become an alias")
+eq(ea("DELETE FROM items OUTPUT deleted.id WHERE id=1", "sqlserver").output, nil,
+  "SQL Server OUTPUT is not a DELETE target alias")
+eq(ea("DELETE i OUTPUT deleted.id FROM items AS i WHERE i.id=1", "sqlserver").i, "items",
+  "SQL Server OUTPUT preserves an explicit DELETE target alias")
+eq(ea("SELECT output.id FROM items output", "sqlite").output, "items",
+  "OUTPUT remains an ordinary alias in SQLite")
+eq(ea("SELECT output.id FROM items output", "sqlserver").output, "items",
+  "OUTPUT remains an ordinary SQL Server SELECT alias")
+eq(ea(string.rep("SELECT (", 64) .. "1" .. string.rep(") FROM items OUTPUT", 64),
+  "sqlserver").output, "items", "nested scalar SELECT keeps ordinary OUTPUT aliases")
+eq(ea("DELETE output FROM items output WHERE output.id=1", "sqlserver").output, "items",
+  "OUTPUT remains an alias in SQL Server DELETE source FROM")
+eq(ea("DELETE FROM items OPTION(RECOMPILE)", "sqlserver").option, nil,
+  "SQL Server OPTION is not a DELETE target alias")
+eq(ea("DELETE TOP (1) FROM items OUTPUT deleted.id", "sqlserver").output, nil,
+  "SQL Server TOP does not expose OUTPUT as an alias")
+eq(ea("DELETE TOP (10) PERCENT FROM items OPTION(RECOMPILE)", "sqlserver").option, nil,
+  "SQL Server TOP PERCENT does not expose OPTION as an alias")
+eq(ea("SELECT option.id FROM items option", "sqlite").option, "items",
+  "OPTION remains an ordinary alias in SQLite")
+eq(ea("DELETE [option] FROM items AS [option] WHERE [option].id=1", "sqlserver").option, "items",
+  "quoted OPTION remains a SQL Server source alias")
+eq(ea('DELETE [output] FROM items AS [output] WHERE [output].id=1', "sqlserver").output, "items",
+  "quoted OUTPUT remains an explicit SQL Server alias")
+eq(ea("SELECT i.id FROM low_priority AS i", "sqlite").i, "low_priority",
+  "UPDATE modifier words do not alter ordinary SELECT source extraction")
+
+-- MariaDB URL dispatch exercises the shared MySQL rules through the real cache.
+do
+  local url = "mariadb://localhost/completion_modifiers"
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+    { column_name = "value", data_type = "text" },
+  } })
+  completion.invalidate(url)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+    "UPDATE LOW_PRIORITY IGNORE items PARTITION(p0) AS i SET value='x' WHERE i.",
+  })
+  local aliases = completion._get_cached_aliases(bufnr, url)
+  eq(aliases.i, "items", "MariaDB connection dispatch recognizes mutation modifiers")
+  local names = {}
+  for _, entry in ipairs(completion.complete("WHERE i.", url, aliases)) do
+    names[entry.word] = true
+  end
+  ok(names.id and names.value, "MariaDB modified target completes actual table columns")
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  restore()
+end
+
 -- ── summary ───────────────────────────────────────────────────────────────────
 print(string.format("\ncompletion_spec: %d passed, %d failed", pass, fail))
 if fail > 0 then os.exit(1) end
