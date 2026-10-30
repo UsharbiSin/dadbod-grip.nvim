@@ -126,6 +126,78 @@ local cases = {
     sql = "INSERT INTO items AS i(id,value) VALUES(2,'changed') ON CONFLICT(id)"
       .. " DO UPDATE SET value=excluded.value WHERE i.id=2 RETURNING coalesce(value,'')",
   },
+  {
+    name = "DuckDB INSERT OR IGNORE", kind = "duckdb",
+    sql = "INSERT OR IGNORE INTO items(id,value) VALUES(2,'ignored')",
+  },
+  {
+    name = "DuckDB INSERT OR REPLACE", kind = "duckdb",
+    sql = "INSERT OR REPLACE INTO items(id,value) VALUES(2,'changed')",
+  },
+  {
+    name = "DuckDB BY NAME reorders source columns", kind = "duckdb",
+    sql = "INSERT INTO items BY NAME (SELECT 'three' AS value, 3 AS id)",
+  },
+  {
+    name = "DuckDB BY POSITION source query", kind = "duckdb",
+    sql = "INSERT INTO items BY POSITION SELECT 3,'three'",
+  },
+  {
+    name = "DuckDB BY POSITION explicit reversed columns", kind = "duckdb",
+    sql = "INSERT INTO items BY POSITION (value,id) SELECT 'three',3",
+  },
+  {
+    name = "DuckDB parenthesized VALUES query", kind = "duckdb",
+    sql = "INSERT INTO items (VALUES(3,'three'))",
+  },
+  {
+    name = "PostgreSQL parenthesized query without column list", kind = "postgresql",
+    sql = "INSERT INTO items ((SELECT 3,'three')) RETURNING id",
+  },
+  {
+    name = "PostgreSQL parenthesized query with column list", kind = "postgresql",
+    sql = "INSERT INTO items(value,id) (SELECT 'three',3)",
+  },
+  {
+    name = "MySQL parenthesized INSERT query", kind = "mysql",
+    sql = "INSERT INTO items(id,value) (SELECT 3,'three')",
+  },
+  {
+    name = "MySQL parenthesized REPLACE query", kind = "mysql",
+    sql = "REPLACE INTO items(id,value) (SELECT 2,'changed')", verb = "REPLACE",
+  },
+  {
+    name = "MySQL empty column list requests defaults", kind = "mysql",
+    sql = "INSERT INTO items () VALUES ()",
+  },
+  {
+    name = "MariaDB REPLACE SET with RETURNING", kind = "mysql",
+    sql = "REPLACE INTO items SET id=2,value='changed' RETURNING id", verb = "REPLACE",
+  },
+  {
+    name = "MySQL TABLE source", kind = "mysql",
+    sql = "INSERT INTO items TABLE source_items",
+  },
+  {
+    name = "DuckDB FROM-first source query", kind = "duckdb",
+    sql = "INSERT INTO items FROM source_items",
+  },
+  {
+    name = "DuckDB parenthesized FROM-first query", kind = "duckdb",
+    sql = "INSERT INTO items BY NAME (FROM source_items)",
+  },
+  {
+    name = "DuckDB VALUES query limit", kind = "duckdb",
+    sql = "INSERT INTO items VALUES(3,'three'),(4,'four') LIMIT 1",
+  },
+  {
+    name = "PostgreSQL VALUES compound query", kind = "postgresql",
+    sql = "INSERT INTO items VALUES(3,'three') UNION ALL SELECT 4,'four'",
+  },
+  {
+    name = "PostgreSQL VALUES query ordering and limit", kind = "postgresql",
+    sql = "INSERT INTO items VALUES(3,'three'),(4,'four') ORDER BY 1 DESC LIMIT 1",
+  },
 }
 for _, case in ipairs(cases) do
   test(case.name, function()
@@ -153,6 +225,9 @@ for _, case in ipairs(cases) do
 end
 
 for _, case in ipairs({
+  { kind = "duckdb", sql = "INSERT OR ABORT INTO items VALUES(3,'three')" },
+  { kind = "duckdb", sql = "INSERT INTO items BY WRONG SELECT 3,'three'" },
+  { kind = "postgresql", sql = "INSERT INTO items (SELECT 3,'three'); DELETE FROM items" },
   { kind = "mysql", sql = "INSERT /*!50000 IGNORE */ INTO items(id,value) VALUES(3,'three')" },
   { kind = "mysql", sql = "REPLACE INTO items VALUES(3,'three'); DELETE FROM items" },
   { kind = "postgresql", sql = "INSERT INTO items(id,value) VALUES(3,'three'); DELETE FROM items" },

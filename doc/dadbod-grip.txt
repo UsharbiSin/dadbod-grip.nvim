@@ -490,10 +490,13 @@ All commands are global and available after the plugin loads.
 
   Ordinary INSERT VALUES shows literal incoming rows, preserving the column
   list, NULLs, and empty strings. MySQL INSERT SET and row/column aliases,
-  SQLite INSERT OR forms, and REPLACE are recognized. UPSERT, REPLACE,
-  ignored conflicts, defaults, computed values, and INSERT SELECT show only
-  current data: their final values and affected counts are determined when
-  the original SQL executes. The title and confirmation identify this mode.
+  SQLite/DuckDB INSERT OR forms, and REPLACE are recognized. DuckDB BY NAME/
+  POSITION, parenthesized/FROM-first source queries, VALUES queries with set
+  operations or limits, and MySQL () VALUES () use current-data previews.
+  UPSERT, REPLACE, ignored conflicts, defaults, computed values, and INSERT
+  SELECT show only current data: their final values and affected counts are
+  determined when the original SQL executes. The title and confirmation
+  identify this mode.
 
   Multi-source JOIN/USING/UPDATE FROM previews and multiple statements are
   rejected rather than showing an incomplete affected-row set. A transaction

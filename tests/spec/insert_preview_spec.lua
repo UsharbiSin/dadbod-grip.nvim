@@ -184,6 +184,16 @@ for _, case in ipairs({
     expected = added({ "3", "three", "default" }, { "4", "FOUR", "default" }),
   },
   {
+    name = "VALUES compound query",
+    sql = "INSERT INTO items(id,value) VALUES(3,'three') UNION ALL SELECT 4,'four';",
+    expected = added({ "3", "three", "default" }, { "4", "four", "default" }),
+  },
+  {
+    name = "VALUES compound query with ordering and limit",
+    sql = "INSERT INTO items(id,value) VALUES(3,'three') UNION ALL SELECT 4,'four' ORDER BY 1 DESC LIMIT 1;",
+    expected = added({ "4", "four", "default" }),
+  },
+  {
     name = "INSERT SELECT with VALUES-shaped alias",
     sql = "INSERT INTO items AS values_alias(value,id) SELECT s.value,s.id+2 FROM items AS s WHERE s.id=1;",
     expected = added({ "3", "one", "default" }),

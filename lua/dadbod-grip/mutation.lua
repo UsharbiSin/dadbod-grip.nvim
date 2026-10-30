@@ -70,11 +70,12 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
   local pos, delete_target = 2, nil
   local current_state = stmt_type == "REPLACE"
   if inserting then
-    if adapter_kind == "sqlite" and tokens[pos] and tokens[pos].upper == "OR" then
+    if (adapter_kind == "sqlite" or adapter_kind == "duckdb")
+        and tokens[pos] and tokens[pos].upper == "OR" then
       local action = tokens[pos + 1] and tokens[pos + 1].upper
-      if not ({ ROLLBACK = true, ABORT = true, FAIL = true, IGNORE = true, REPLACE = true })[action] then
-        return reject()
-      end
+      local valid = action == "IGNORE" or action == "REPLACE"
+        or (adapter_kind == "sqlite" and ({ ROLLBACK = true, ABORT = true, FAIL = true })[action])
+      if not valid then return reject() end
       current_state, pos = true, pos + 2
     elseif adapter_kind == "mysql" then
       while tokens[pos] and ({ LOW_PRIORITY = true, HIGH_PRIORITY = true,
@@ -185,13 +186,39 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
       if not parts then return reject() end
       pos, result.current_state = next_pos, true
     end
-    if tokens[pos] and tokens[pos].kind == "(" then
-      result.insert_columns, pos = identifiers(pos)
-      if not result.insert_columns then return reject() end
+    if adapter_kind == "duckdb" and tokens[pos] and tokens[pos].upper == "BY" then
+      local order = tokens[pos + 1] and tokens[pos + 1].upper
+      if order ~= "NAME" and order ~= "POSITION" then return reject() end
+      pos, result.current_state = pos + 2, true
     end
 
+    -- Parenthesized source queries occupy the same slot as an optional column
+    -- list. Quoted keyword-shaped columns have no upper field and stay columns.
+    local function source_query(first)
+      if adapter_kind ~= "postgresql" and adapter_kind ~= "mysql"
+          and adapter_kind ~= "duckdb" then return false end
+      if not tokens[first] or tokens[first].kind ~= "(" then return false end
+      while tokens[first] and tokens[first].kind == "(" do first = first + 1 end
+      local keyword = tokens[first] and tokens[first].upper
+      return keyword == "SELECT" or keyword == "WITH"
+        or keyword == "VALUES" or keyword == "TABLE"
+        or (adapter_kind == "duckdb" and keyword == "FROM")
+    end
+    if source_query(pos) then result.current_state = true; return result end
+    if tokens[pos] and tokens[pos].kind == "(" then
+      if adapter_kind == "mysql" and matching[pos] == pos + 1 then
+        -- MySQL () VALUES () requests defaults, not an all-NULL predicted row.
+        result.insert_columns, result.current_state, pos = {}, true, pos + 2
+      else
+        result.insert_columns, pos = identifiers(pos)
+        if not result.insert_columns then return reject() end
+      end
+    end
+    if source_query(pos) then result.current_state = true; return result end
+
     local body = tokens[pos] and tokens[pos].upper
-    if body == "SELECT" or body == "WITH" or body == "TABLE" or body == "OVERRIDING" then
+    if body == "SELECT" or body == "WITH" or body == "TABLE" or body == "OVERRIDING"
+        or (adapter_kind == "duckdb" and body == "FROM") then
       -- Source queries and identity overrides cannot be predicted without
       -- executing SQL. The preview shows the current target table only.
       result.current_state = true
@@ -275,6 +302,12 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
             or (tokens[pos + 1] and tokens[pos + 1].upper == "DUPLICATE"
               and tokens[pos + 2] and tokens[pos + 2].upper == "KEY"
               and tokens[pos + 3] and tokens[pos + 3].upper == "UPDATE")) then
+        result.current_state = true
+      elseif (body == "VALUES" or body == "VALUE")
+          and ({ UNION = true, INTERSECT = true, EXCEPT = true, ORDER = true,
+            LIMIT = true, OFFSET = true, FETCH = true })[tokens[pos].upper] then
+        -- VALUES may start a larger query. Its first tuples do not predict the
+        -- result of set operations, ordering, or limits applied to that query.
         result.current_state = true
       elseif tokens[pos].upper ~= "RETURNING" then
         return reject()

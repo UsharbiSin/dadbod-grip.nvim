@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tokens. Target aliases, quoted names, comments, nested expressions, and
   RETURNING no longer corrupt predicates, column mappings, or VALUES rows.
   UPDATE staging preserves NULL versus empty strings and the last assignment.
-  INSERT preserves column order and positional NULLs; SQLite INSERT OR forms
-  and MySQL VALUE, SET, and row/column aliases are recognized.
+  INSERT preserves column order and positional NULLs; SQLite/DuckDB INSERT OR
+  forms, DuckDB BY NAME/POSITION and FROM-first queries, parenthesized source
+  queries, and MySQL VALUE, SET, empty default lists, and row/column aliases
+  are recognized. VALUES query tails do not become predicted incoming rows.
 - UPSERT, REPLACE, ignored conflicts, defaults, and computed/source-query
   inserts show current data without predicting new values or affected counts.
   Confirmation executes the original SQL once; completed writes report the
