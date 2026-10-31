@@ -53,6 +53,39 @@ test("new: editable when PKs present", function()
   eq(st.readonly, false, "should be editable")
 end)
 
+test("new: missing single projected PK is readonly", function()
+  local st = make_state({ columns = { "name" }, rows = { { "alice" } } })
+  eq(st.readonly, true, "PK metadata alone cannot identify a result row")
+end)
+
+test("new: omitting either part of a composite PK is readonly", function()
+  for _, selected in ipairs({ "order_id", "product_id" }) do
+    local st = make_state({ columns = { selected, "name" }, rows = { { "1", "alice" } },
+      primary_keys = { "order_id", "product_id" } })
+    eq(st.readonly, true, "only selected " .. selected)
+  end
+end)
+
+test("new: empty projection with PK metadata is readonly", function()
+  local st = make_state({ columns = {}, rows = {} })
+  eq(st.readonly, true)
+end)
+
+test("new: complete composite PK remains editable in any column order", function()
+  local st = make_state({ columns = { "name", "product_id", "order_id" },
+    rows = { { "alice", "5", "10" } }, primary_keys = { "order_id", "product_id" } })
+  eq(st.readonly, false)
+end)
+
+test("new: caller-owned columns cannot reuse a stale projected-key map", function()
+  local result = { table_name = "users", columns = { "id", "name" }, primary_keys = { "id" } }
+  local original = data.new(result)
+  eq(original.readonly, false)
+  result.columns[1] = "other"
+  eq(data.new(result).readonly, true, "reused result must check its current projection")
+  eq(original.columns[1], "id", "original state owns its columns")
+end)
+
 test("new: readonly when no table_name", function()
   local st = make_state({ no_table_name = true, primary_keys = { "id" } })
   eq(st.readonly, true, "no table_name should be readonly")

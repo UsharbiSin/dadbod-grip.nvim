@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Projected query results stay read-only unless every primary-key column is
+  selected, preventing edits or deletes from using an incomplete row key.
+
 ## [3.16.0] - 2026-10-17
 
 ### Added

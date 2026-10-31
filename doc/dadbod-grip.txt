@@ -973,8 +973,11 @@ Multi-level undo: every edit operation pushes the previous state onto a
 50-deep undo stack. Press `u` repeatedly to step back through your edit
 history. Press `U` to reset to the original state in one step.
 
-Read-only mode is auto-detected when no primary key exists on the table
-(grip needs PKs for WHERE clauses in UPDATE/DELETE statements). SELECT
+Read-only mode is auto-detected when no primary key exists on the table or
+the result omits any primary-key column, including part of a composite key
+(grip needs the complete PK for WHERE clauses in UPDATE/DELETE statements).
+Empty raw queries also stay read-only when the client returns no column metadata;
+schema fallback still allows insertion into an empty full-table view. SELECT
 projections with column aliases, including unchanged names such as `id AS id`,
 or expressions such as `total * 2` and bare `CURRENT_TIMESTAMP` open read-only.
 Supported direct column references and wildcards remain eligible for editing

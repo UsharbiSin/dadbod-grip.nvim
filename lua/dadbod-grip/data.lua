@@ -33,7 +33,7 @@ end
 --   deleted    = {},        -- { [row_idx] = true }
 --   inserted   = {},        -- [row_idx] = { field = value }  (row_idx > #rows)
 --   _next_insert_idx = nil, -- monotonically increasing fake row idx for inserts
---   readonly   = false,     -- true when no PKs detected or no table_name
+--   readonly   = false,     -- true without a table or every projected PK
 -- }
 
 -- Column-name → index memo, keyed by the columns table itself.
@@ -96,12 +96,20 @@ end
 -- makes the reason explicit instead of leaving it to be inferred from the
 -- absence of a key, so a future PK-less-but-editable grid cannot undo it.
 function M.new(query_result)
+  local columns = deep_copy(query_result.columns or {})
   local pks = query_result.primary_keys or {}
   local table_name = query_result.table_name
   local readonly = (#pks == 0) or (table_name == nil) or query_result.readonly == true
+  -- UPDATE/DELETE predicates use the original result's key values. A missing
+  -- projected key would disappear from that predicate and could match siblings
+  -- sharing the remaining composite-key values. Require the entire key.
+  local present = col_index_map(columns)
+  for _, pk in ipairs(pks) do
+    if not present[pk] then readonly = true; break end
+  end
   return {
     rows = deep_copy(query_result.rows or {}),
-    columns = deep_copy(query_result.columns or {}),
+    columns = columns,
     pks = deep_copy(pks),
     table_name = table_name,
     url = query_result.url,
