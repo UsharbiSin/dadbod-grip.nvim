@@ -132,6 +132,21 @@ test("build_delete: composite PK sorted", function()
   assert(oid_idx < pid_idx, "order_id should come before product_id in WHERE")
 end)
 
+test("projected edits and deletes use every original composite key value", function()
+  local data = require("dadbod-grip.data")
+  local st = data.new({ table_name = "order_items", primary_keys = { "order_id", "product_id" },
+    columns = { "name", "product_id", "order_id" }, rows = { { "before", "5", "10" } } })
+  eq(st.readonly, false)
+  st = data.add_change(st, 1, "order_id", "20")
+  st = data.add_change(st, 1, "name", "after")
+  local upd = data.get_updates(st)[1]
+  eq(sql.build_update(st.table_name, upd.pk_values, upd.changes),
+    [[UPDATE "order_items" SET "name" = 'after', "order_id" = '20' WHERE "order_id" = '10' AND "product_id" = '5']])
+  local del = data.get_deletes(data.toggle_delete(st, 1))[1]
+  eq(sql.build_delete(st.table_name, del.pk_values),
+    [[DELETE FROM "order_items" WHERE "order_id" = '10' AND "product_id" = '5']])
+end)
+
 -- ── preview_staged() ────────────────────────────────────────────────────────
 
 test("preview_staged: no changes returns comment", function()

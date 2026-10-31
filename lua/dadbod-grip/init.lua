@@ -765,11 +765,15 @@ end
 --- Returns ONE table, never a bare `nil, err`: ui.blocking() forwards its fn's
 --- returns through table.unpack, which drops everything after a leading nil.
 --- @return table { result: table|nil, err: string|nil, elapsed_ms: number }
-local function fetch_refresh(url, query_sql, table_name)
+local function fetch_refresh(url, query_sql, table_name, is_raw)
   local t0 = vim.uv.hrtime()
   local result, err = db.query(query_sql, url, { engine_timing = OPTS.engine_timing })
   local elapsed_ms = math.floor((vim.uv.hrtime() - t0) / 1e6)
   if err then return { err = err, elapsed_ms = elapsed_ms } end
+
+  -- Some clients omit headers for zero rows. Schema fallback can prove the
+  -- columns of our full-table SELECT *, but not a raw query's projection.
+  local unproven_projection = is_raw and #result.columns == 0
 
   -- Empty result: fetch columns from schema (adapter returns none for 0 rows)
   if (#result.columns == 0) and table_name then
@@ -782,7 +786,7 @@ local function fetch_refresh(url, query_sql, table_name)
   end
 
   -- Re-fetch primary keys
-  result.readonly = db.is_readonly(url)
+  result.readonly = db.is_readonly(url) or unproven_projection == true
   if table_name and not result.readonly then
     local pks, pk_err = db.get_primary_keys(table_name, url)
     result.primary_keys = (pk_err == nil) and pks or {}
@@ -840,7 +844,7 @@ local function do_refresh(bufnr, url, query_sql, table_name, write_result)
     write_result.is_current = require("dadbod-grip.write").capture_owner(bufnr, owner)
   end
   local fetched = ui.blocking("  querying " .. spinner_label(table_name) .. "...", function()
-    return fetch_refresh(url, query_sql, table_name)
+    return fetch_refresh(url, query_sql, table_name, owner.query_spec and owner.query_spec.is_raw)
   end)
   apply_refresh(bufnr, fetched, owner, generation, nil, write_result)
 end
@@ -1310,7 +1314,7 @@ function M.open(arg, url, opts)
   -- before the grid ever appeared -- which reads as the plugin hanging.
   local fetched, total_rows
   ui.blocking("  querying " .. short_label .. "...", function()
-    fetched = fetch_refresh(conn, query_sql, table_name_arg)
+    fetched = fetch_refresh(conn, query_sql, table_name_arg, spec.is_raw)
     if not fetched.result then return end
     local count_result = db.query(query.build_count_sql(spec), conn)
     if count_result and count_result.rows[1] then
@@ -1410,7 +1414,7 @@ function M.open(arg, url, opts)
           if new_spec.page > total_pages then new_spec = query.set_page(new_spec, total_pages) end
         end
         new_sql = query.build_sql(new_spec)
-        page_fetch = fetch_refresh(conn, new_sql, table_name_arg)
+        page_fetch = fetch_refresh(conn, new_sql, table_name_arg, new_spec.is_raw)
       end)
       apply_refresh(bid, page_fetch, s, generation,
         { spec = new_spec, sql = new_sql, total_rows = pending_total })
