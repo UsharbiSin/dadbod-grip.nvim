@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its recency there. Repeated selections preserve templated credentials,
   read-only mode, color, identity, and attachments without creating a local
   shadow. Global DuckDB profiles also restore their saved attachments.
+- Attaching or detaching databases on a global DuckDB profile now saves the
+  attachment changes to its global registry, so reconnecting retains the
+  current attachment set, including when the last attachment is removed.
 
 ## [3.16.0] - 2026-10-17
 

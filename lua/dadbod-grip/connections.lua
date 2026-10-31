@@ -1005,7 +1005,7 @@ function M.current()
 end
 
 --- Persist attachments for a DuckDB connection URL.
---- Called after attach/detach to update .grip/connections.json.
+--- Called after attach/detach to update the profile's owning registry.
 ---
 --- `url` is the connection URL as stored (templated), since that is the key
 --- the entry lives under on disk; the live adapter registry is keyed by the
@@ -1017,22 +1017,28 @@ end
 --- template is resolved again on replay by M.switch/expand_dsn. Records with
 --- no template (a literal DSN) round-trip byte-identically, as before.
 function M.save_attachments(url, attachments)
-  local file_conns = read_local_connections()
-  local found = false
-  for _, c in ipairs(file_conns) do
-    if c.url == url then
-      c.attachments = attachments and #attachments > 0 and {} or nil
-      if attachments then
-        for _, a in ipairs(attachments) do
-          table.insert(c.attachments, { dsn = a.template or a.dsn, alias = a.alias })
+  local function save_to(conns, write_conns)
+    for _, c in ipairs(conns) do
+      if c.url == url then
+        c.attachments = attachments and #attachments > 0 and {} or nil
+        if attachments then
+          for _, a in ipairs(attachments) do
+            table.insert(c.attachments, { dsn = a.template or a.dsn, alias = a.alias })
+          end
         end
+        write_conns(conns)
+        return true
       end
-      found = true
-      break
     end
+    return false
   end
-  if found then
-    write_file_connections(file_conns)
+
+  -- Local overrides own their attachments, matching switch()/entry_for().
+  -- A configured registry is exclusive; otherwise a global-only profile
+  -- must keep attachment edits there without creating a local shadow.
+  if save_to(read_local_connections(), write_file_connections) then return end
+  if not configured_connections_path() then
+    save_to(read_json_connections(global_connections_path(), "global"), write_global_connections)
   end
 end
 
