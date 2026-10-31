@@ -1,7 +1,7 @@
 -- cell_buffer_spec.lua: tests for the full-buffer cell editor (issue #18)
 --
--- gB opens the cell under cursor in a real split buffer: JSON values are
--- pretty-printed with ft=json, prose columns get ft=markdown, :w stages the
+-- gB opens the cell under cursor in a real split buffer: JSON values open
+-- as stored with ft=json, prose columns get ft=markdown, :w stages the
 -- buffer content back into the grid session via data.add_change.
 
 local view = require("dadbod-grip.view")
@@ -69,20 +69,20 @@ local function has_nmap(buf, lhs)
   return false
 end
 
--- ── render_value: JSON detection + pretty print ─────────────────────────────
+-- ── render_value: JSON detection + text preservation ─────────────────────────────
 
-test("render_value: JSON object pretty-printed with 2-space indent, ft=json", function()
-  local lines, ft = cell_buffer.render_value('{"b":1,"a":{"c":[1,2]}}', "payload")
+test("render_value: JSON object opens as stored, ft=json", function()
+  local raw = '{"b":1,"a":12345678901234567890,"c":1.2300}'
+  local lines, ft = cell_buffer.render_value(raw, "payload")
   eq(ft, "json", "filetype")
-  eq(table.concat(lines, "\n"),
-    '{\n  "a": {\n    "c": [\n      1,\n      2\n    ]\n  },\n  "b": 1\n}',
-    "pretty text")
+  eq(table.concat(lines, "\n"), raw, "number spelling and key order")
 end)
 
-test("render_value: JSON array pretty-printed, ft=json", function()
-  local lines, ft = cell_buffer.render_value("[1,2]", "payload")
+test("render_value: JSON array preserves newlines and whitespace, ft=json", function()
+  local raw = ' \n[\n  9007199254740993, 1.00e+02\n]\n '
+  local lines, ft = cell_buffer.render_value(raw, "payload")
   eq(ft, "json", "filetype")
-  eq(table.concat(lines, "\n"), "[\n  1,\n  2\n]", "pretty text")
+  eq(table.concat(lines, "\n"), raw, "exact stored text")
 end)
 
 test("render_value: surrounding whitespace still detected as JSON", function()
@@ -149,7 +149,7 @@ end)
 
 -- ── open: split buffer basics ────────────────────────────────────────────────
 
-test("open: JSON cell opens pretty-printed split with stable name", function()
+test("open: JSON cell opens as stored in split with stable name", function()
   cleanup()
   local bufnr = open_grid({ { "1", '{"a":1}', "hello" } })
   goto_cell(bufnr, 1, "payload")
@@ -165,7 +165,7 @@ test("open: JSON cell opens pretty-printed split with stable name", function()
   eq(vim.api.nvim_get_option_value("swapfile", { buf = cb }), false, "swapfile")
   eq(has_nmap(cb, "q"), false, "q left alone in editable mode")
   local lines = vim.api.nvim_buf_get_lines(cb, 0, -1, false)
-  eq(table.concat(lines, "\n"), '{\n  "a": 1\n}', "pretty content")
+  eq(table.concat(lines, "\n"), '{"a":1}', "stored content")
   cleanup()
 end)
 

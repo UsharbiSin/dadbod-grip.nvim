@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Projected query results stay read-only unless every primary-key column is
   selected, preventing edits or deletes from using an incomplete row key.
+- JSON cells open exactly as stored in the float and split editors. Editing
+  one field preserves large integers, decimal spelling, key order, and
+  whitespace elsewhere in the document.
 
 ## [3.16.0] - 2026-10-17
 
