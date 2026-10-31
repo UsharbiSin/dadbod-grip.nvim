@@ -1313,6 +1313,19 @@ to come from that profile. If the same URL has a project-local profile, that
 override keeps precedence and only its recency is updated.
 Attachment changes also save to the profile's owning registry.
 
+Press `D` in the connection picker to remove the selected saved profile from
+its original registry after confirmation. Other profiles with the same name
+are preserved. Deleting a local override reveals the global profile for that
+URL on the next refresh. If the selected profile changed or is ambiguous,
+reopen the picker before deleting. Unsaved and discovered-only rows have no
+saved profile to remove; deleting a discovered row with saved settings removes
+only those settings, and the live container can still appear. Built-in and
+demo rows retain their separate dismissal behavior.
+Removing a profile preserves every other stored record, including custom
+fields. Malformed registry JSON is refused without changing the file.
+Deletion requires a nonempty string `id`, or no `id` for a legacy profile;
+numeric and other unsupported IDs are refused without changing the file.
+
 `g:dbs` entries auto-persist to the global file so they appear in every
 project without any extra steps.
 
