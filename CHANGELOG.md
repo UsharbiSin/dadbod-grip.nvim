@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JSON cells open exactly as stored in the float and split editors. Editing
   one field preserves large integers, decimal spelling, key order, and
   whitespace elsewhere in the document.
+- Selecting a global connection keeps it in the global registry and updates
+  its recency there. Repeated selections preserve templated credentials,
+  read-only mode, color, identity, and attachments without creating a local
+  shadow. Global DuckDB profiles also restore their saved attachments.
 
 ## [3.16.0] - 2026-10-17
 

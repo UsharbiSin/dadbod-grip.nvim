@@ -53,6 +53,7 @@ elseif scenario == "disabled" then
   opts.completion = false
   opts.ai = false
 end
+opts.connections_path = vim.fn.tempname() .. "_connections.json"
 grip.setup(opts)
 
 local url = "sqlite:tests/seed_sqlite.db"

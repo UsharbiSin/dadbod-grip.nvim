@@ -216,9 +216,8 @@ local function read_json_connections(path, source)
 end
 
 --- Read connections from the project-local file only.
---- Use this for all mutation paths (add, touch, remove, save_attachments).
---- Keeping mutation local-only prevents global connections from leaking into
---- the local file on every write.
+--- Use this for project-local mutations (add, touch, remove, save_attachments).
+--- Switches update the owning file instead of copying a global profile here.
 local function read_local_connections()
   return read_json_connections(connections_path(), "file")
 end
@@ -391,6 +390,25 @@ local function write_file_connections(conns)
   vim.fn.writefile({ json }, connections_path())
 end
 
+--- Write only global connections, preserving the same profile fields as the
+--- local writer. Never pass the merged read_file_connections() list here.
+local function write_global_connections(conns)
+  ensure_global_grip_dir()
+  local data = {}
+  for _, c in ipairs(conns) do
+    local entry = { name = c.name, url = c.url }
+    if c.id then entry.id = c.id end
+    if c.type then entry.type = c.type end
+    if c.attachments and #c.attachments > 0 then entry.attachments = c.attachments end
+    if c.last_used then entry.last_used = c.last_used end
+    if c.env_file then entry.env_file = c.env_file end
+    if c.mode then entry.mode = c.mode end
+    if c.color then entry.color = c.color end
+    table.insert(data, entry)
+  end
+  vim.fn.writefile({ vim.fn.json_encode(data) }, global_connections_path())
+end
+
 --- Resolve a persisted connection by opaque ID.
 --- @return table|nil connection
 --- @return string|nil reason "missing" or "ambiguous"
@@ -443,21 +461,7 @@ function M.ensure_id(url)
     if c.url == url and not c.id then c.id, global_changed = id, true end
   end
   if local_changed then write_file_connections(local_conns) end
-  if global_changed then
-    ensure_global_grip_dir()
-    local data = {}
-    for _, c in ipairs(global_conns) do
-      local entry = { id = c.id, name = c.name, url = c.url }
-      if c.type then entry.type = c.type end
-      if c.attachments and #c.attachments > 0 then entry.attachments = c.attachments end
-      if c.last_used then entry.last_used = c.last_used end
-      if c.env_file then entry.env_file = c.env_file end
-      if c.mode then entry.mode = c.mode end
-      if c.color then entry.color = c.color end
-      table.insert(data, entry)
-    end
-    vim.fn.writefile({ vim.fn.json_encode(data) }, global_connections_path())
-  end
+  if global_changed then write_global_connections(global_conns) end
   return id
 end
 
@@ -567,22 +571,7 @@ function M.list()
   end
 
   -- Write global file if new entries were added
-  if new_global then
-    ensure_global_grip_dir()
-    local gdata = {}
-    for _, gc in ipairs(global_existing) do
-      local gentry = { name = gc.name, url = gc.url }
-      if gc.id then gentry.id = gc.id end
-      if gc.type then gentry.type = gc.type end
-      if gc.attachments and #gc.attachments > 0 then gentry.attachments = gc.attachments end
-      if gc.last_used then gentry.last_used = gc.last_used end
-      if gc.env_file then gentry.env_file = gc.env_file end
-      if gc.mode then gentry.mode = gc.mode end
-      if gc.color then gentry.color = gc.color end
-      table.insert(gdata, gentry)
-    end
-    vim.fn.writefile({ vim.fn.json_encode(gdata) }, global_connections_path())
-  end
+  if new_global then write_global_connections(global_existing) end
 
   -- Mark any connection whose URL is in the global file as source = "global".
   -- When a URL exists in both local and global files, the local entry wins the
@@ -742,7 +731,7 @@ end
 
 --- Switch active connection. Routes file connections through grip.open(),
 --- DB connections through vim.g.db + workspace open.
---- Auto-saves to .grip/connections.json if not already persisted.
+--- Touches the owning registry; new named URLs save to the project registry.
 --- opts: { write = bool, watch_ms = number, mode = "ro"|"rw", on_ready = function }: session-only,
 --- never persisted.
 --- @return boolean committed  false when the switch aborted and nothing changed
@@ -770,27 +759,29 @@ function M.switch(url, name, conn_type, opts)
     return false
   end
 
-  -- Single read of the local file; everything below (type resolution,
-  -- rename/insert, MRU touch) mutates this same in-memory list, and it is
-  -- written back at most once at the end instead of once per mutation.
+  -- Find the owning registry independently of conn_type: the picker passes
+  -- a type, but a global-only profile must still be touched in its own file.
+  -- A deliberate local override wins, matching entry_for()'s precedence.
   local local_conns = read_local_connections()
-
-  -- Resolve type: param > local connections > global connections > auto-detect.
-  -- The global file is only read when actually needed for the lookup, since
-  -- most callers already pass conn_type or have a locally-known type.
   local resolved_type = conn_type
-  if not resolved_type then
-    for _, c in ipairs(local_conns) do
-      if c.url == url and c.type then
-        resolved_type = c.type
-        break
-      end
+  local saved_entry
+  for _, c in ipairs(local_conns) do
+    if c.url == url then
+      saved_entry = saved_entry or c
+      resolved_type = resolved_type or c.type
     end
   end
-  if not resolved_type and not configured_connections_path() then
-    for _, c in ipairs(read_json_connections(global_connections_path(), "global")) do
-      if c.url == url and c.type then
-        resolved_type = c.type
+
+  -- Keep type precedence: param > local > global > auto-detect. The global
+  -- registry is needed for ownership when absent locally, or as a type
+  -- fallback. A configured path remains the only registry in that mode.
+  local global_conns, in_global
+  if not configured_connections_path() and (not saved_entry or not resolved_type) then
+    global_conns = read_json_connections(global_connections_path(), "global")
+    for _, c in ipairs(global_conns) do
+      if c.url == url then
+        resolved_type = resolved_type or c.type
+        if not saved_entry then saved_entry, in_global = c, true end
         break
       end
     end
@@ -799,21 +790,20 @@ function M.switch(url, name, conn_type, opts)
     resolved_type = "file"
   end
 
-  -- Always upsert when a name is provided. This handles both insert (new
-  -- URL) and rename (existing URL with a stale generic name like "vim.g.db").
-  -- Without this, an already-saved URL would keep a stale name forever even
-  -- when switching with the correct one.
-  local changed = false
-  if name and name ~= "" then
-    upsert_conn(local_conns, name, url)
-    changed = true
-  end
-  -- Touch AFTER upsert so first-time connections get last_used stamped.
-  if touch_conn(local_conns, url) then
-    changed = true
-  end
-  if changed then
-    write_file_connections(local_conns)
+  -- Global profiles stay global. A stripped-down local upsert would shadow
+  -- env_file/mode/color/id on every later lookup, including the next query.
+  if in_global then
+    if touch_conn(global_conns, url) then write_global_connections(global_conns) end
+  else
+    -- Preserve local insert/rename behavior, including stale vim.g.db names.
+    local changed = false
+    if name and name ~= "" then
+      upsert_conn(local_conns, name, url)
+      changed = true
+    end
+    -- Touch AFTER upsert so first-time connections get last_used stamped.
+    if touch_conn(local_conns, url) then changed = true end
+    if changed then write_file_connections(local_conns) end
   end
 
   -- The one place a mode override is set or cleared. Connecting the ordinary
@@ -907,21 +897,15 @@ function M.switch(url, name, conn_type, opts)
   -- Regular DB connection: set vim.g.db and open full workspace
   vim.g.db = url
 
-  -- Restore persisted attachments for DuckDB connections (local file only;
-  -- attachments are always saved to local by M.save_attachments).
+  -- Restore attachments from the selected profile, including global-only
+  -- profiles. A deliberate local override still owns its own attachments.
   --
   -- One of the four paths that bypass db.resolve(), so it expands by hand:
   -- the adapter's attachment registry is keyed by the URL the adapter is
   -- called with, which is the *expanded* one on every query, and the stored
   -- DSNs are templates that only become connectable here.
   if conn_url:find("^duckdb:") then
-    local stored_atts
-    for _, c in ipairs(local_conns) do
-      if c.url == url and c.attachments then
-        stored_atts = c.attachments
-        break
-      end
-    end
+    local stored_atts = saved_entry and saved_entry.attachments
     if stored_atts then
       local live_atts = {}
       for _, a in ipairs(stored_atts) do

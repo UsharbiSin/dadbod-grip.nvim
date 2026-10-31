@@ -1267,6 +1267,11 @@ connection exists, connections are grouped under "global" and "project"
 section headers so the scope is immediately visible without any extra
 knowledge of the file layout.
 
+Selecting a saved global connection updates its recency in the global file
+without creating a project-local copy. Its settings and attachments continue
+to come from that profile. If the same URL has a project-local profile, that
+override keeps precedence and only its recency is updated.
+
 `g:dbs` entries auto-persist to the global file so they appear in every
 project without any extra steps.
 
