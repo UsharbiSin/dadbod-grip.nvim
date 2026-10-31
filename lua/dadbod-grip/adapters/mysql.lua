@@ -608,6 +608,10 @@ local function rewrite_default_values(sql_str)
       local finish = sql_str:find("*/", i + 2, true)
       local nested = sql_str:find("/*", i + 2, true)
       if not finish or (nested and nested < finish) then return sql_str end
+      -- mysql also honors short client commands inside optimizer hints. A
+      -- delimiter/charset command invalidates this scan's boundary assumptions.
+      local command = marker:sub(1, 1) == "+" and sql_str:find("\\", i + 3, true)
+      if command and command < finish then return sql_str end
       i = finish + 2
     elseif ch == "'" or ch == '"' or ch == "`" then
       local first, quote, closed = i, ch, false

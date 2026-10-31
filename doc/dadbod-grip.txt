@@ -1598,8 +1598,9 @@ get_foreign_keys, get_indexes, get_table_stats, list_tables, and explain.
 MySQL/MariaDB translate `INSERT ... DEFAULT VALUES` into the native
 `INSERT ... () VALUES ()` form. Translation recognizes mixed-case keywords
 and ordinary comments while preserving quoted data, identifiers, and the
-surrounding SQL. Inputs with executable comments, SQL-mode or delimiter
-changes, or ambiguous/unfinished quoting or comments are sent unchanged.
+surrounding SQL. Inputs with executable comments, optimizer hints containing
+client commands, SQL-mode or delimiter changes, or ambiguous/unfinished
+quoting or comments are sent unchanged.
 Use native `() VALUES ()` syntax for those inputs.
 
 File-as-table: `:Grip /path/to/data.parquet` routes through DuckDB to

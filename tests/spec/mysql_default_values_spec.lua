@@ -66,6 +66,8 @@ local conversions = {
     "INSERT INTO t () VALUES () ON DUPLICATE KEY UPDATE v='DEFAULT VALUES'" },
   { "INSERT INTO t DEFAULT VALUES RETURNING id, 'DEFAULT VALUES'",
     "INSERT INTO t () VALUES () RETURNING id, 'DEFAULT VALUES'" },
+  { "INSERT /*+ NO_INDEX_MERGE(t) */ INTO t DEFAULT VALUES",
+    "INSERT /*+ NO_INDEX_MERGE(t) */ INTO t () VALUES ()" },
 }
 
 for i, case in ipairs(conversions) do
@@ -115,6 +117,8 @@ local preserved = {
   "SET sql_mode=''; INSERT INTO t VALUES ('a\\'; INSERT INTO x DEFAULT VALUES;')",
   "INSERT INTO t DEFAULT VALUES; SET @@SESSION.sql_mode=''; INSERT INTO t DEFAULT VALUES",
   "DELIMITER $$\nCREATE PROCEDURE p() BEGIN; INSERT INTO t DEFAULT VALUES; END$$",
+  "INSERT /*+ \\d // */ INTO t DEFAULT VALUES",
+  "INSERT INTO t DEFAULT VALUES; INSERT /*+ \\d // */ INTO t DEFAULT VALUES",
 }
 
 for i, input in ipairs(preserved) do
