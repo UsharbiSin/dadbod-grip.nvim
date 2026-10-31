@@ -9,7 +9,10 @@ local adapters = require("dadbod-grip.adapters")
 local opts = grip.get_opts()
 local confirm, notify = vim.fn.confirm, vim.notify
 vim.fn.confirm = function() return 1 end
-vim.notify = function() end
+local errors = {}
+vim.notify = function(msg, level)
+  if level == vim.log.levels.ERROR then errors[#errors + 1] = tostring(msg) end
+end
 local path = vim.fn.tempname() .. "_engine_write.duckdb"
 local url = "duckdb:" .. path
 local pass, fail = 0, 0
@@ -19,6 +22,7 @@ local function cleanup()
 end
 local function test(name, fn)
   cleanup()
+  errors = {}
   grip.setup({ engine_timing = true, show_result_time = true, show_running_time = true, show_hints = true, timeout = 2000 })
   local ok, err = xpcall(fn, debug.traceback)
   if ok then pass = pass + 1 else fail = fail + 1; print("FAIL: " .. name .. ": " .. tostring(err)) end
@@ -46,7 +50,12 @@ test("successful single mutation retains distinct write and SELECT profiler late
   assert(session._query_engine_times[session.state.rows].status == "available")
   assert(text(buf):find("Write engine:", 1, true), text(buf))
   assert(text(buf):find("Engine:", 1, true) and text(buf):find("Query:", 1, true))
+  -- Let the scheduled metadata CLI release DuckDB's file lock before testing
+  -- a successful refresh. A failed refresh intentionally retains old timing.
+  assert(vim.wait(5000, function() return session._column_info ~= nil end, 5), "column metadata did not settle")
+  local previous_rows = session.state.rows
   session.on_refresh(buf)
+  assert(session.state.rows ~= previous_rows, "refresh did not replace the displayed result: " .. table.concat(errors, "; "))
   assert(not text(buf):find("Write engine:", 1, true), "unrelated refresh inherited write engine duration")
 end)
 
