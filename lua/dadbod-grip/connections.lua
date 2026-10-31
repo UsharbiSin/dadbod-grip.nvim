@@ -202,7 +202,8 @@ local function read_json_connections(path, source)
   for _, entry in ipairs(data) do
     if type(entry) == "table" and entry.name and entry.url then
       local c = { name = entry.name, url = entry.url,
-                  type = entry.type, source = source or "file" }
+                  type = entry.type, source = source or "file",
+                  _registry_path = vim.fn.fnamemodify(path, ":p") }
       if entry.id then c.id = entry.id end
       if entry.attachments then c.attachments = entry.attachments end
       if entry.last_used then c.last_used = entry.last_used end
@@ -390,10 +391,10 @@ local function write_file_connections(conns)
   vim.fn.writefile({ json }, connections_path())
 end
 
---- Write only global connections, preserving the same profile fields as the
---- local writer. Never pass the merged read_file_connections() list here.
-local function write_global_connections(conns)
-  ensure_global_grip_dir()
+--- Write a single registry, preserving supported profile fields and record order.
+--- Never pass the merged read_file_connections() list here.
+local function write_registry_connections(conns, path)
+  paths.ensure_dir(vim.fn.fnamemodify(path, ":h"))
   local data = {}
   for _, c in ipairs(conns) do
     local entry = { name = c.name, url = c.url }
@@ -406,7 +407,11 @@ local function write_global_connections(conns)
     if c.color then entry.color = c.color end
     table.insert(data, entry)
   end
-  vim.fn.writefile({ vim.fn.json_encode(data) }, global_connections_path())
+  vim.fn.writefile({ vim.fn.json_encode(data) }, path)
+end
+
+local function write_global_connections(conns)
+  write_registry_connections(conns, global_connections_path())
 end
 
 --- Resolve a persisted connection by opaque ID.
@@ -533,7 +538,7 @@ function M.list()
         -- fetch whose file entry no longer carries them.
         c = vim.tbl_extend("force", {}, c)
         for _, field in ipairs({
-          "id", "type", "env_file", "mode", "color", "attachments", "last_used",
+          "id", "type", "env_file", "mode", "color", "attachments", "last_used", "_registry_path",
         }) do
           if c[field] == nil then c[field] = filed[field] end
         end
@@ -717,16 +722,106 @@ function M.touch(url)
   end
 end
 
---- Remove a connection from .grip/connections.json by name.
-function M.remove(name)
-  local conns = read_local_connections()
-  local filtered = {}
-  for _, c in ipairs(conns) do
-    if c.name ~= name then
-      table.insert(filtered, c)
+--- Splice one entry from an already-validated JSON array. Track only top-level
+--- separators: strings and nested values may contain commas or brackets.
+--- Surviving records stay verbatim, including unknown fields and exact numbers.
+local function without_registry_entry(raw, opener, selected)
+  local spans, commas = {}, {}
+  local start, depth, quoted, escaped = opener + 1, 0, false, false
+  local function add_span(last)
+    local first = start
+    while first <= last and raw:sub(first, first):match("%s") do first = first + 1 end
+    while last >= first and raw:sub(last, last):match("%s") do last = last - 1 end
+    if first <= last then table.insert(spans, { first, last }) end
+  end
+  for pos = opener + 1, #raw do
+    local char = raw:sub(pos, pos)
+    if quoted then
+      if escaped then escaped = false
+      elseif char == "\\" then escaped = true
+      elseif char == '"' then quoted = false end
+    elseif char == '"' then quoted = true
+    elseif char == "[" or char == "{" then depth = depth + 1
+    elseif char == "}" then depth = depth - 1
+    elseif char == "]" then
+      if depth == 0 then add_span(pos - 1); break end
+      depth = depth - 1
+    elseif char == "," and depth == 0 then
+      add_span(pos - 1)
+      table.insert(commas, pos)
+      start = pos + 1
     end
   end
-  write_file_connections(filtered)
+  local span = spans[selected]
+  if not span then return nil end
+  local first, last = span[1], span[2]
+  if commas[selected] then last = commas[selected]
+  elseif selected > 1 then first = commas[selected - 1] end
+  return raw:sub(1, first - 1) .. raw:sub(last + 1)
+end
+
+-- Persisted IDs are opaque strings. Numeric IDs can round during JSON decode,
+-- making a stale selection compare equal to a different stored identity.
+local function deletable_id(id)
+  return id == nil or (type(id) == "string" and id ~= "")
+end
+
+--- Remove exactly one saved profile. Picker rows carry original registry
+--- provenance independently of their display source (a local override can
+--- display as global). Match URL and ID together; a changed or ambiguous
+--- selection must not remove a replacement or a same-name peer.
+--- Legacy remove(name) remains local/custom-only and requires a unique name.
+--- @return boolean removed
+--- @return string|nil reason "missing", "ambiguous", "registry", "identity", or "invalid"
+function M.remove(target)
+  local by_name = type(target) == "string"
+  local path = vim.fn.fnamemodify(connections_path(), ":p")
+  if not by_name then
+    if type(target) ~= "table" or type(target.url) ~= "string" or target.url == ""
+        or type(target._registry_path) ~= "string" then return false, "missing" end
+    if not deletable_id(target.id) then return false, "identity" end
+    local origin = target._registry_path
+    local global_path = vim.fn.fnamemodify(global_connections_path(), ":p")
+    if origin ~= path and (configured_connections_path() or origin ~= global_path) then
+      return false, "registry"
+    end
+    path = origin
+  end
+
+  -- Read the actual registry, not the UI projection or the merged list.
+  -- Reconstructing survivors through a field whitelist loses extension data;
+  -- decoding and re-encoding also rounds large JSON numbers. Decode only to
+  -- validate and locate the selected identity, then splice the original text.
+  if vim.fn.filereadable(path) == 0 then return false, "missing" end
+  local read_ok, lines = pcall(vim.fn.readfile, path, "b")
+  if not read_ok then return false, "invalid" end
+  -- readfile represents a physical NUL as an embedded newline in a list
+  -- item. NUL is invalid JSON; do not accidentally normalize it to whitespace.
+  for _, line in ipairs(lines) do
+    if line:find("\n", 1, true) then return false, "invalid" end
+  end
+  local raw = table.concat(lines, "\n")
+  local opener = raw:find("%S")
+  if not opener or raw:sub(opener, opener) ~= "[" then return false, "invalid" end
+  local valid, conns = pcall(vim.json.decode, raw)
+  if not valid or type(conns) ~= "table" then return false, "invalid" end
+  local selected
+  for index, c in ipairs(conns) do
+    if type(c) == "table" and type(c.name) == "string" and type(c.url) == "string" then
+      local matches = by_name and c.name == target
+        or (not by_name and c.url == target.url and c.id == target.id)
+      if matches then
+        if not deletable_id(c.id) then return false, "identity" end
+        if selected then return false, "ambiguous" end
+        selected = index
+      end
+    end
+  end
+  if not selected then return false, "missing" end
+  local updated = without_registry_entry(raw, opener, selected)
+  if not updated then return false, "invalid" end
+  vim.fn.writefile(vim.split(updated, "\n", { plain = true }), path, "b")
+  return true
 end
 
 --- Switch active connection. Routes file connections through grip.open(),
@@ -1277,9 +1372,18 @@ function M.pick(opts)
         end
         return
       end
+      -- An ad-hoc/env/discovered-only row is not a saved profile. In
+      -- particular, its display name must never delete a saved namesake.
+      if not c._registry_path then return end
       if ui.confirm("Remove '" .. c.name .. "'? (y/N): ") then
-        M.remove(c.name)
-        refresh_fn(build_picker_items())
+        local removed, reason = M.remove(c)
+        if removed then
+          refresh_fn(build_picker_items())
+        elseif reason == "identity" then
+          vim.notify("Grip: profile ID must be a non-empty string or absent; no profile removed.", vim.log.levels.WARN)
+        else
+          vim.notify("Grip: connection changed or is ambiguous; reopen the picker before deleting.", vim.log.levels.WARN)
+        end
       end
     end,
     actions = {

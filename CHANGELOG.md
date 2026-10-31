@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching text inside data, quoted identifiers, or comments. Mixed-case and
   comment-separated `DEFAULT VALUES` clauses work without rewriting their
   surrounding SQL. Ambiguous or executable-comment input stays unchanged.
+- Connection picker deletion removes only the selected saved profile from
+  its original project, global, or configured registry. Same-name profiles
+  remain intact, and stale or ambiguous selections are refused. Surviving
+  records retain their complete contents, including extension fields and
+  exact numeric values; malformed registries are refused without writing.
+  Deletion refuses numeric and other unsupported profile IDs rather than
+  treating rounded numeric values as the same identity.
 
 ## [3.17.0] - 2026-10-31
 
