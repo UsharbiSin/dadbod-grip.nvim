@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.17.0] - 2026-10-31
+
 ### Added
 
 - `highlights` setup overrides replace Grip group definitions and persist across
@@ -799,7 +801,8 @@ older tags are left in place so anyone pinned to them keeps working.
 - **joryeugene** — SQL Server adapter, PostgreSQL routines in the schema sidebar, focused ER diagram
   ([PR #17](https://github.com/joryeugene/dadbod-grip.nvim/pull/17)).
 
-[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.16.0...HEAD
+[Unreleased]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.17.0...HEAD
+[3.17.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.16.0...v3.17.0
 [3.16.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.15.0...v3.16.0
 [3.15.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.14.0...v3.15.0
 [3.14.0]: https://github.com/joryeugene/dadbod-grip.nvim/compare/v3.13.0...v3.14.0
