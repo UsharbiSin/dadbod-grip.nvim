@@ -777,11 +777,12 @@ EDITING ~
                   NORMAL mode for full Vim motions (ciw, dw, s, etc.),
                   then <CR> to save or q/<Esc> to cancel.
                   <C-c> in INSERT cancels immediately.
-                  JSON cell values open with JSON syntax highlighting and
-                  a taller float. Long values wrap at word boundaries.
+                  JSON cell values open as stored, with JSON syntax
+                  highlighting and a taller float. Long values wrap at word
+                  boundaries.
                   Footer updates live: INSERT hint vs NORMAL hint.
   gB              Open cell value in a full split buffer
-                  JSON is pretty-printed with ft=json; :w stages the
+                  JSON opens as stored with ft=json; :w stages the
                   change. Read-only grids open in view mode (q closes).
                   See |grip-cell-buffer|.
   x               Set cell to NULL
@@ -996,16 +997,16 @@ Press `gB` on a cell to open its value in a real split buffer (named
 grip://cell/<table>/<row>/<column>) instead of the small float editor.
 Built for large values: big JSON documents, long text.
 
-  - JSON values are pretty-printed with 2-space indent and ft=json
-    (syntax highlighting and folding work as usual).
+  - JSON values open exactly as stored with ft=json (syntax highlighting
+    and folding work as usual). Editing preserves large numbers, decimal
+    spelling, key order, and whitespace outside your changes.
   - Prose columns (body, description, notes, content, text, bio) open
     with ft=markdown; everything else stays plain.
   - Multiline values round-trip exactly: the grid displays newlines as a
     return symbol, the buffer edits the real thing.
   - :w stages the buffer content as a change to that cell (nothing
     touches the database until `a`). Saving without textual changes
-    stages nothing ("No changes"), so pretty-printed JSON never produces
-    whitespace-only diffs.
+    stages nothing ("No changes").
   - NULL cells open empty. Save non-empty text to stage it; to keep the
     cell NULL just close without saving (:q).
   - On read-only grids the buffer opens in view mode and `q` closes it.

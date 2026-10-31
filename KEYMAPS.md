@@ -35,7 +35,7 @@ Action names map 1:1 to the entries in `lua/dadbod-grip/keymaps.lua`.
 | Key | Action |
 |-----|--------|
 | `i` / `<CR>` | Edit cell under cursor |
-| `gB` | Open cell value in a split buffer (`:w` stages; JSON pretty-printed; read-only grids: view mode, `q` closes) |
+| `gB` | Open cell value in a split buffer (`:w` stages; JSON opens as stored; read-only grids: view mode, `q` closes) |
 | `x` | Set cell to NULL |
 | `gU` | Set column value for all visible rows (skips staged-deleted rows; confirms above 50 rows) |
 | `p` | Paste clipboard into cell |
