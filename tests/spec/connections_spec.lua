@@ -467,6 +467,131 @@ test("switch: global DuckDB attachments restore from their original profile", fu
   end)
 end)
 
+test("global GripAttach and GripDetach changes survive reconnect without a local copy", function()
+  if vim.fn.executable("duckdb") ~= 1 then
+    assert(vim.env.GRIP_REQUIRE_DUCKDB ~= "1", "DuckDB required for attachment command regression")
+    print("SKIP: global attachment commands (duckdb CLI not installed)")
+    return
+  end
+  with_real_file(function(local_grip, global_grip)
+    paths.ensure_dir(global_grip)
+    local env_file = global_grip .. "/attachments.env"
+    local main_path = global_grip .. "/main.duckdb"
+    local old_path = global_grip .. "/old.duckdb"
+    local fresh_path = global_grip .. "/fresh.duckdb"
+    for _, path in ipairs({ main_path, old_path, fresh_path }) do
+      local result = vim.system({ "duckdb", path, "-c", "CREATE TABLE fixture(value INTEGER); INSERT INTO fixture VALUES (42);" },
+        { text = true }):wait()
+      eq(result.code, 0, "isolated DuckDB fixture seeded: " .. (result.stderr or ""))
+    end
+    local url, live_url = "${GRIP_TEST_GLOBAL_DUCK_URL}", "duckdb:" .. main_path
+    local old_dsn, fresh_dsn = "${GRIP_TEST_GLOBAL_OLD_DSN}", "${GRIP_TEST_GLOBAL_FRESH_DSN}"
+    vim.fn.writefile({
+      "GRIP_TEST_GLOBAL_DUCK_URL=" .. live_url,
+      "GRIP_TEST_GLOBAL_OLD_DSN=" .. old_path,
+      "GRIP_TEST_GLOBAL_FRESH_DSN=" .. fresh_path,
+    }, env_file)
+    local profile = {
+      id = "conn_global_attachments", name = "global duck", url = url, type = "duckdb",
+      env_file = env_file, mode = "rw", color = "orange", last_used = 100,
+      attachments = { { alias = "old", dsn = old_dsn } },
+    }
+    write_connections_json(global_grip, { profile })
+    package.loaded["dadbod-grip.adapters.duckdb"] = nil
+    local duckdb = require("dadbod-grip.adapters.duckdb")
+    assert(connections.switch(url, profile.name, "duckdb"), "initial global selection succeeds")
+    eq(duckdb.get_attachments(live_url)[1].alias, "old", "initial attachment restored")
+
+    vim.cmd("GripAttach " .. fresh_dsn .. " fresh")
+    eq(#duckdb.get_attachments(live_url), 2, "actual attach command updates live registry")
+    local stored = read_connections_json(global_grip)[1]
+    eq(#stored.attachments, 2, "actual attach command persists to global registry")
+    eq(stored.attachments[2].dsn, fresh_dsn, "global persistence keeps DSN template")
+
+    vim.cmd("GripDetach old")
+    eq(#duckdb.get_attachments(live_url), 1, "actual detach command updates live registry")
+    stored = read_connections_json(global_grip)[1]
+    eq(#stored.attachments, 1, "actual detach command persists removal")
+    eq(stored.attachments[1].alias, "fresh", "only the new attachment stays persisted")
+    assert(connections.switch(url, profile.name, "duckdb"), "reconnect succeeds")
+    eq(#duckdb.get_attachments(live_url), 1, "reconnect keeps the current attachment set")
+    eq(duckdb.get_attachments(live_url)[1].alias, "fresh", "removed attachment is not resurrected")
+    local result, err = duckdb.query("SELECT value FROM fresh.fixture", live_url)
+    assert(result, err)
+    eq(result.rows[1][1], "42", "reconnected attachment can query its isolated fixture")
+
+    vim.cmd("GripDetach fresh")
+    eq(read_connections_json(global_grip)[1].attachments, nil, "detaching the last attachment persists an empty set")
+    assert(connections.switch(url, profile.name, "duckdb"), "reconnect without attachments succeeds")
+    eq(#duckdb.get_attachments(live_url), 0, "reconnect does not resurrect the final detached attachment")
+    eq(vim.fn.filereadable(local_grip .. "/connections.json"), 0, "commands never create a project shadow")
+    eq(vim.g.db, url, "active connection remains templated")
+    stored = read_connections_json(global_grip)[1]
+    stored.attachments, stored.last_used = nil, nil
+    local expected = vim.deepcopy(profile)
+    expected.attachments, expected.last_used = nil, nil
+    assert(vim.deep_equal(stored, expected), "attachment changes preserve all other profile fields")
+  end)
+end)
+
+test("save_attachments: a local override owns changes without rewriting its global counterpart", function()
+  with_real_file(function(local_grip, global_grip)
+    local url = "duckdb:/fixture/shared.duckdb"
+    local local_profile = {
+      id = "conn_local_attachment", name = "local", url = url, type = "duckdb",
+      env_file = "/fixture/local.env", mode = "ro", color = "orange", last_used = 17,
+    }
+    write_connections_json(local_grip, { local_profile })
+    write_connections_json(global_grip, {
+      { id = "conn_global_attachment", name = "global", url = url, color = "red",
+        attachments = { { alias = "global", dsn = "/fixture/global.duckdb" } } },
+    })
+    local before = table.concat(vim.fn.readfile(global_grip .. "/connections.json"), "\n")
+    local attachments = { { alias = "local", dsn = "/fixture/local.duckdb" } }
+
+    connections.save_attachments(url, attachments)
+
+    local_profile.attachments = attachments
+    assert(vim.deep_equal(read_connections_json(local_grip)[1], local_profile), "local settings and attachments retained")
+    eq(table.concat(vim.fn.readfile(global_grip .. "/connections.json"), "\n"), before,
+      "global counterpart remains byte-identical")
+  end)
+end)
+
+test("save_attachments: a configured path owns changes and never falls back to global", function()
+  with_real_file(function(local_grip, global_grip)
+    local url = "duckdb:/fixture/shared.duckdb"
+    local custom_dir = local_grip .. "/custom"
+    local custom = {
+      id = "conn_custom_attachment", name = "custom", url = url, type = "duckdb",
+      env_file = "/fixture/custom.env", mode = "ro", color = "green", last_used = 31,
+    }
+    write_connections_json(custom_dir, { custom })
+    write_connections_json(global_grip, { { name = "global", url = url, color = "red" } })
+    grip.setup({ connections_path = custom_dir .. "/connections.json" })
+    local before = table.concat(vim.fn.readfile(global_grip .. "/connections.json"), "\n")
+    local attachments = { { alias = "custom", dsn = "/fixture/custom.duckdb" } }
+
+    connections.save_attachments(url, attachments)
+
+    custom.attachments = attachments
+    assert(vim.deep_equal(read_connections_json(custom_dir)[1], custom), "configured profile preserves every field")
+    write_connections_json(custom_dir, {})
+    connections.save_attachments(url, attachments)
+    eq(#read_connections_json(custom_dir), 0, "missing configured profile is not copied from global")
+    eq(table.concat(vim.fn.readfile(global_grip .. "/connections.json"), "\n"), before, "global remains byte-identical")
+    eq(vim.fn.filereadable(local_grip .. "/connections.json"), 0, "default local registry untouched")
+  end)
+end)
+
+test("save_attachments: an unsaved connection does not create a profile", function()
+  with_real_file(function(local_grip, global_grip)
+    connections.save_attachments("duckdb:/fixture/unsaved.duckdb", { { alias = "side", dsn = "/fixture/side.duckdb" } })
+    eq(vim.fn.filereadable(local_grip .. "/connections.json"), 0, "unsaved connection stays unsaved locally")
+    eq(vim.fn.filereadable(global_grip .. "/connections.json"), 0, "unsaved connection stays unsaved globally")
+  end)
+end)
+
 -- ── attachments-restore reads the pre-mutation snapshot ────────────────────
 
 test("switch: attachments-restore reads the pre-mutation snapshot (rename doesn't disturb .attachments)", function()
