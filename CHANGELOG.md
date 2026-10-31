@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- MySQL/MariaDB default-row inserts translate SQL tokens instead of replacing
+  matching text inside data, quoted identifiers, or comments. Mixed-case and
+  comment-separated `DEFAULT VALUES` clauses work without rewriting their
+  surrounding SQL. Ambiguous or executable-comment input stays unchanged.
+
 ## [3.17.0] - 2026-10-31
 
 ### Added
