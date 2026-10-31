@@ -130,6 +130,7 @@ Override if needed: >lua
     show_running_time = true,
     show_result_time  = true,
     show_hints        = true,
+    highlights        = {},
   })
 <
 When `completion` is false, grip's built-in TextChangedI popup is disabled.
@@ -143,6 +144,45 @@ connections file shared across projects.
 `timeout` applies to database CLI calls. DuckDB work that may download an
 extension or read a remote URL gets a 60-second minimum for that network step.
 Health pings use 5 seconds.
+
+                                                        *grip-highlights*
+Highlight overrides ~
+
+`highlights` maps Grip group names to |nvim_set_hl()| style definitions.
+For selection colors that follow a light or dark colorscheme: >lua
+  require("dadbod-grip").setup({
+    highlights = {
+      GripColHighlight = { link = "Visual" },
+      GripHeaderActive = { link = "Visual" },
+      GripNull = { link = "Comment" },
+    },
+  })
+<
+Grip applies built-in definitions first, then the current connection accent,
+then your overrides. An override REPLACES the entire group; unspecified
+attributes do not inherit Grip's colors or styles. An empty definition (`{}`)
+clears a group. Links follow the target group when the colorscheme changes.
+Use `fg`/`bg` for explicit GUI colors and `ctermfg`/`ctermbg` for terminal colors.
+The `default` and `force` control flags are not supported: configured overrides
+always take precedence.
+
+Overrides are reapplied when grids open, after `:colorscheme`, and on connection
+switches, including reconnecting or leaving a colored connection. A later
+`setup()` replaces the map; omitting `highlights` or passing `{}` restores
+built-in definitions and the current connection accent. With no overrides,
+Grip's existing appearance is unchanged.
+
+Supported groups:
+  GripHeader         GripHeaderActive   GripColHighlight   GripColType
+  GripNull           GripNullStaged     GripReadonly       GripModified
+  GripDeleted        GripInserted       GripStatusOk       GripStatusChg
+  GripNegative       GripBoolTrue       GripBoolFalse      GripDatePast
+  GripUrl            GripWatch          GripConnAccent     GripConnAccentBold
+  GripBorder
+
+Invalid maps, unknown group names, and invalid highlight definitions raise a
+setup error before changing live options or visible groups. Define linked
+target groups in your colorscheme, as you would for other Neovim highlights.
 
                                                         *grip-query-timer*
 Operations wrapped in grip's loading float, such as opening a table or
@@ -1464,10 +1504,9 @@ Three highlight groups carry it:
                        instead of leaving the last connection's tint behind
 
 All three are redefined on every connection switch and re-applied whenever
-highlights are rebuilt, so they survive a `:colorscheme` change. Because
-they are redefined rather than merged, defining any of them yourself in your
-config will not stick -- this is unchanged from how grip's other groups have
-always behaved.
+highlights are rebuilt, so they survive a `:colorscheme` change. To customize
+them persistently, use the `highlights` setup option (|grip-highlights|); those
+overrides take precedence over the connection's accent.
 
 ==============================================================================
 14. EXPORT                                                   *grip-export*
@@ -1606,6 +1645,8 @@ grip.setup({opts})
     show_result_time  (boolean) Retained query/action durations. Default: true
     show_hints        (boolean) Automatic shortcut help. Default: true
                                 See |grip-query-timer|
+    highlights        (table) Grip group replacements. Default: {}
+                              See |grip-highlights|
 
                                                            *grip.open()*
 grip.open({arg}, {url}, {opts})

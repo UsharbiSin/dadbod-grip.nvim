@@ -50,6 +50,7 @@ local OPTS = {
   show_hints = true,
   show_running_time = true,
   show_result_time = true,
+  highlights = {},
 }
 
 --- Return a copy of the current options.
@@ -1849,6 +1850,7 @@ end
 ---@field show_running_time? boolean Show elapsed time in the loading float (default: true)
 ---@field show_result_time? boolean Show retained query/action durations (default: true)
 ---@field show_hints? boolean Show automatic shortcut help (default: true)
+---@field highlights? table<string, table> Grip group replacements using nvim_set_hl style attributes
 
 ---Setup dadbod-grip with user options.
 ---@param opts? DadbodGripOpts
@@ -1879,7 +1881,11 @@ function M.setup(opts)
     show_running_time = { opts.show_running_time, "boolean", true },
     show_result_time  = { opts.show_result_time,  "boolean", true },
     show_hints        = { opts.show_hints,        "boolean", true },
+    highlights        = { opts.highlights,       "table",   true },
   })
+  -- Nested definitions are validated before any live config is changed.
+  view.set_highlights(opts.highlights or {})
+  OPTS.highlights = vim.deepcopy(opts.highlights or {})
   OPTS.limit        = opts.limit        or 100
   OPTS.max_col_width = opts.max_col_width or 40
   OPTS.timeout      = opts.timeout      or 10000

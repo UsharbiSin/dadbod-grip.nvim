@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `highlights` setup overrides replace Grip group definitions and persist across
+  colorscheme changes, grid opens, and connection switches. Link the selected
+  column and sticky header to your theme's `Visual` group for matching light and
+  dark colors. Explicit overrides take precedence over connection accents.
+
 ### Fixed
 
 - Projected query results stay read-only unless every primary-key column is

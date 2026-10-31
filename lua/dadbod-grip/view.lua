@@ -199,9 +199,16 @@ end
 -- The accent of the connection currently switched to. Read by
 -- ensure_highlights, so it is re-applied on every :colorscheme too.
 local _accent = nil
+local _highlight_overrides = {}
+local _highlight_groups = {}
 
 local function ensure_highlights()
-  local hl = vim.api.nvim_set_hl
+  -- Resolve the connection's defaults first; an explicit setup definition
+  -- replaces the whole group, including links and empty (cleared) groups.
+  local function hl(ns, group, defaults)
+    _highlight_groups[group] = true
+    vim.api.nvim_set_hl(ns, group, _highlight_overrides[group] or defaults)
+  end
   hl(0, "GripHeader",       { bold = true })
   -- Sticky-header counterpart of GripColHighlight: same bg, so the column the
   -- cursor is in reads the same in the winbar as it does in the grid.
@@ -238,6 +245,29 @@ vim.api.nvim_create_autocmd("ColorScheme", {
   group    = _hl_ag,
   callback = ensure_highlights,
 })
+
+--- Replace setup's highlight map. Validate every entry in an inactive
+--- namespace before changing live state, so one typo cannot half-apply a theme.
+--- @param overrides table<string, table>
+function M.set_highlights(overrides)
+  local copy = vim.deepcopy(overrides)
+  local ns = vim.api.nvim_create_namespace("DadbodGripHLValidation")
+  for group, definition in pairs(copy) do
+    if not _highlight_groups[group] then
+      error("highlights: unknown Grip group " .. vim.inspect(group), 2)
+    end
+    vim.validate({ ["highlights." .. group] = { definition, "table" } })
+    -- These are set_hl control flags, not styling. Overrides must always win
+    -- over the plugin's existing definition, regardless of refresh order.
+    if definition.default ~= nil or definition.force ~= nil then
+      error("highlights." .. group .. ": default and force flags are unsupported", 2)
+    end
+    local ok, err = pcall(vim.api.nvim_set_hl, ns, group, definition)
+    if not ok then error("highlights." .. group .. ": " .. tostring(err), 2) end
+  end
+  _highlight_overrides = copy
+  ensure_highlights()
+end
 
 --- Tint the accent groups for the connection being switched to.
 ---

@@ -195,6 +195,8 @@ Set `show_running_time = false` to hide the loading counter or `show_result_time
 
 Set `engine_timing = true` to collect DuckDB profiler latency during an eligible single statement's original execution. Profiling adds overhead and never reruns the statement. Batches and other adapters report unsupported timing; missing or invalid profiles report unavailable timing. See `:help grip-engine-timing` for the metric and support limits.
 
+Set `highlights = { GripColHighlight = { link = "Visual" }, GripHeaderActive = { link = "Visual" } }` to follow your colorscheme's selection colors. Overrides survive colorscheme and connection changes. See `:help grip-highlights` for supported groups and precedence.
+
 All default values, picker integrations, connection fields, remappable actions, and AI-provider options live in `:help grip-config` and the [getting-started guide](https://jorypestorious.com/dadbod-grip-web/docs/getting-started).
 Welcome actions are also configurable, for example `keymaps = { welcome_next = "<F2>", welcome_activate = "<F3>" }`. Setting an action to `false` removes its mapping. Welcome keeps command fallbacks visible, and `?` shows effective keys for the current pane. The palette remains available in the grid, query pad, and sidebar.
 
