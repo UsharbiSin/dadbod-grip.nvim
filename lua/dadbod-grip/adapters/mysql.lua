@@ -527,15 +527,16 @@ function M.get_table_stats(table_name, url)
   }, nil
 end
 
---- Translate INSERT [priority] [IGNORE] [INTO] table [PARTITION (...)] DEFAULT
---- VALUES, optionally followed by ON DUPLICATE KEY UPDATE or RETURNING.
+--- Translate INSERT/REPLACE default rows, including priority and PARTITION.
+--- INSERT may use IGNORE or ON DUPLICATE KEY UPDATE; MariaDB allows RETURNING.
 --- Keep token offsets so comments, quoting, and all text
 --- outside the two keyword edits survive byte-for-byte. This is deliberately
 --- not a general SQL parser: ambiguous/session-dependent input passes through
 --- unchanged so the server remains responsible for SQL errors.
 local function rewrite_default_values(sql_str)
+  if not sql_str:find("[dD][eE][fF][aA][uU][lL][tT]") then return sql_str end
   local tokens, edits = {}, {}
-  local i, n = 1, #sql_str
+  local i, n, depth = 1, #sql_str, 0
   local word_part = "[%w_$\128-\255]"
 
   local function keyword(index, word)
@@ -550,19 +551,18 @@ local function rewrite_default_values(sql_str)
   end
 
   local function statement()
-    -- Later statements can change quote interpretation after a mode change;
-    -- mysql's DELIMITER command also changes the meaning of semicolons.
-    if keyword(1, "DELIMITER") then return false end
-    if keyword(1, "SET") then
-      for _, token in ipairs(tokens) do
-        if token.text == "SQL_MODE" then return false end
-      end
-    end
-    if keyword(1, "INSERT") then
+    if depth ~= 0 then return false end
+    -- Session changes, dynamic SQL, and client directives can invalidate the
+    -- initial quote mode or statement boundaries. Preserve their whole batch.
+    if keyword(1, "SET") or keyword(1, "EXECUTE") or keyword(1, "CONNECT")
+        or keyword(1, "RESETCONNECTION") or keyword(1, "SOURCE")
+        or keyword(1, "DELIMITER") then return false end
+    local inserting = keyword(1, "INSERT")
+    if inserting or keyword(1, "REPLACE") then
       local at = 2
-      if keyword(at, "LOW_PRIORITY") or keyword(at, "HIGH_PRIORITY")
-          or keyword(at, "DELAYED") then at = at + 1 end
-      if keyword(at, "IGNORE") then at = at + 1 end
+      if keyword(at, "LOW_PRIORITY") or keyword(at, "DELAYED")
+          or (inserting and keyword(at, "HIGH_PRIORITY")) then at = at + 1 end
+      if inserting and keyword(at, "IGNORE") then at = at + 1 end
       if keyword(at, "INTO") then at = at + 1 end
       if identifier(at) then
         at = at + 1
@@ -579,7 +579,7 @@ local function rewrite_default_values(sql_str)
         local tail = at + 2
         local complete = #tokens == at + 1
           or (keyword(tail, "RETURNING") and tokens[tail + 1])
-          or (keyword(tail, "ON") and keyword(tail + 1, "DUPLICATE")
+          or (inserting and keyword(tail, "ON") and keyword(tail + 1, "DUPLICATE")
             and keyword(tail + 2, "KEY") and keyword(tail + 3, "UPDATE") and tokens[tail + 4])
         if keyword(at, "DEFAULT") and keyword(at + 1, "VALUES") and complete then
           edits[#edits + 1] = { first = tokens[at].first, last = tokens[at].last, text = "()" }
@@ -640,6 +640,11 @@ local function rewrite_default_values(sql_str)
     else
       -- mysql client commands can change delimiters/session interpretation.
       if ch == "\\" then return sql_str end
+      if ch == "(" then depth = depth + 1
+      elseif ch == ")" then
+        depth = depth - 1
+        if depth < 0 then return sql_str end
+      end
       tokens[#tokens + 1] = { kind = "other", text = ch, first = i, last = i }
       i = i + 1
     end

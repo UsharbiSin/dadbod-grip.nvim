@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MySQL/MariaDB default-row compatibility also handles REPLACE and leaves
+  batches unchanged when session changes, dynamic execution, client directives,
+  or unbalanced parentheses make rewriting uncertain. Statements without
+  DEFAULT skip the compatibility scan. SQLite trailing comments no longer
+  hide the query used to report affected rows.
 - MySQL/MariaDB default-row inserts translate SQL tokens instead of replacing
   matching text inside data, quoted identifiers, or comments. Mixed-case and
   comment-separated `DEFAULT VALUES` clauses work without rewriting their

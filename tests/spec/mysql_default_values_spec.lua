@@ -13,7 +13,7 @@ local function test(name, fn)
   if ok then pass = pass + 1 else fail = fail + 1; print("FAIL: " .. name .. ": " .. tostring(err)) end
 end
 
-local function execute(sql, response, session)
+local function execute(sql, response, session, scheme)
   local run_cmd, executable, session_opts = adapters.run_cmd, vim.fn.executable, adapters.session_opts
   local seen = { calls = 0 }
   adapters.run_cmd = function(args, timeout, opts)
@@ -24,7 +24,7 @@ local function execute(sql, response, session)
   vim.fn.executable = function(name) return name == "mysql" and 1 or executable(name) end
   adapters.session_opts = function() return session or {} end
   local ok, result, err = pcall(mysql.execute, sql,
-    "mysql://fixture_user:fixture_password@fixture.invalid/fixture_db")
+    (scheme or "mysql") .. "://fixture_user:fixture_password@fixture.invalid/fixture_db")
   adapters.run_cmd, vim.fn.executable, adapters.session_opts = run_cmd, executable, session_opts
   assert(ok, result)
   return seen, result, err
@@ -127,6 +127,51 @@ for i, input in ipairs(preserved) do
     eq(seen.opts.stdin, expected_stdin(input), "stdin SQL unchanged")
     eq(seen.calls, 1, "no automatic retry")
   end)
+end
+
+for _, scheme in ipairs({ "mysql", "mariadb" }) do
+  for _, case in ipairs({
+    { "REPLACE INTO t DEFAULT VALUES", "REPLACE INTO t () VALUES ()" },
+    { "replace t default/**/values", "replace t ()/**/VALUES ()" },
+    { "REPLACE LOW_PRIORITY INTO t DEFAULT VALUES", "REPLACE LOW_PRIORITY INTO t () VALUES ()" },
+    { "REPLACE DELAYED t DEFAULT VALUES", "REPLACE DELAYED t () VALUES ()" },
+    { "REPLACE INTO t PARTITION (p0) DEFAULT VALUES RETURNING id",
+      "REPLACE INTO t PARTITION (p0) () VALUES () RETURNING id" },
+    { "INSERT INTO t DEFAULT VALUES; /* ordinary \\x */ REPLACE INTO t DEFAULT VALUES",
+      "INSERT INTO t () VALUES (); /* ordinary \\x */ REPLACE INTO t () VALUES ()" },
+  }) do
+    test(scheme .. " translates default-row REPLACE: " .. case[1], function()
+      local seen = execute(case[1], nil, nil, scheme)
+      eq(seen.opts.stdin, expected_stdin(case[2]), "only default-row keywords change")
+      eq(seen.calls, 1, "one invocation")
+    end)
+  end
+  for _, input in ipairs({
+    "INSERT INTO t DEFAULT VALUES; SET @value='DEFAULT VALUES'",
+    "SET NAMES utf8mb4; INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES; EXECUTE mode",
+    "EXECUTE IMMEDIATE 'SET sql_mode = CONCAT(CHAR(65),CHAR(78))'; INSERT INTO t DEFAULT VALUES",
+    "CONNECT; INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES; CONNECT",
+    "RESETCONNECTION; INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES; RESETCONNECTION",
+    "SOURCE fixture.sql; INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES; SOURCE fixture.sql",
+    "SELECT (1; INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES; SELECT (1",
+    "SELECT 1); INSERT INTO t DEFAULT VALUES",
+    "INSERT INTO t DEFAULT VALUES; SELECT 1)",
+    "REPLACE HIGH_PRIORITY INTO t DEFAULT VALUES",
+    "REPLACE IGNORE INTO t DEFAULT VALUES",
+    "REPLACE INTO t DEFAULT VALUES ON DUPLICATE KEY UPDATE id=1",
+    "UPDATE t SET v='foo\\'; INSERT INTO t DEFAULT VALUES",
+  }) do
+    test(scheme .. " preserves ambiguous or unsupported batch: " .. input, function()
+      local seen = execute(input, nil, nil, scheme)
+      eq(seen.opts.stdin, expected_stdin(input), "whole batch unchanged")
+      eq(seen.calls, 1, "one invocation")
+    end)
+  end
 end
 
 test("rewrite retains private stdin/password transport and read-only setup", function()
