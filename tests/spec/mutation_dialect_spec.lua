@@ -55,6 +55,16 @@ end
 
 local cases = {
   {
+    name = "MySQL ordinary optimizer hint", kind = "mysql",
+    sql = "UPDATE /*+ MAX_EXECUTION_TIME(1000) */ items SET value='changed' WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+  },
+  {
+    name = "MySQL ordinary comment with a backslash", kind = "mysql",
+    sql = "UPDATE /* ordinary \\q text */ items SET value='changed' WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+  },
+  {
     name = "SQL Server client-shaped assignment names beside operators", kind = "sqlserver",
     sql = "UPDATE items SET\nreset=1,\ned=1,\nquit=1,\nexit=1,\nvalue='changed' WHERE\ngo=2",
     select = "SELECT * FROM \"items\" WHERE (go=2)", value = "changed",
@@ -323,6 +333,8 @@ for _, case in ipairs({
   { kind = "sqlserver", sql = "DELETE items OUTPUT deleted.id WHERE id=2; DELETE FROM other" },
   { kind = "sqlserver", sql = "UPDATE items SET value='changed' OUTPUT WHERE id=2" },
   { kind = "sqlserver", sql = "DELETE items OUTPUT" },
+  { kind = "mysql", sql = "UPDATE /*+ \\q */ items SET value='changed' WHERE id=2" },
+  { kind = "mysql", sql = "UPDATE items SET value='changed' WHERE id=2 /*+ \\x */" },
   { kind = "mysql", sql = "UPDATE items /*!50000 AS i */ SET value='changed' WHERE id=2" },
   { kind = "mysql", sql = "UPDATE items /*M!100100 AS i */ SET value='changed' WHERE id=2" },
   { kind = "postgresql", sql = "UPDATE items SET value=other.value FROM other WHERE items.id=other.id" },

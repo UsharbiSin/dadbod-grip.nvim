@@ -1177,6 +1177,119 @@ do
   restore()
 end
 
+-- Complete parameter tokens must not truncate the remaining buffer's aliases.
+for _, case in ipairs({
+  { "postgresql", "$1" }, { "duckdb", "$1" }, { "duckdb", "$update" },
+  { "sqlite", "$id" }, { "sqlite", "$ns::update(suffix)" },
+}) do
+  local kind, parameter = case[1], case[2]
+  local aliases = ea("SELECT " .. parameter .. ", i.id FROM items AS i; SELECT u.id FROM users AS u", kind)
+  eq(aliases.i, "items", kind .. " aliases after parameter: " .. parameter)
+  eq(aliases.u, "users", kind .. " later statement after parameter: " .. parameter)
+  aliases = ea("SELECT i.id FROM items AS i WHERE i.id=" .. parameter, kind)
+  eq(aliases.i, "items", kind .. " aliases before parameter: " .. parameter)
+end
+for _, temp in ipairs({ "#temp", "##temp" }) do
+  local aliases = ea("SELECT i.id FROM items i JOIN " .. temp .. " t ON i.id=t.id", "sqlserver")
+  eq(aliases.i, "items", "SQL Server temporary source preserves ordinary alias: " .. temp)
+end
+for _, comment in ipairs({ "/* outer /* FROM users fake */ outer */", "-- comment\r" }) do
+  local aliases = ea("SELECT i.id FROM items i " .. comment .. "; SELECT u.id FROM users u", "sqlserver")
+  eq(aliases.i, "items", "SQL Server comment preserves preceding alias")
+  eq(aliases.u, "users", "SQL Server comment preserves following alias")
+  eq(aliases.fake, nil, "SQL Server nested comment never introduces an alias")
+end
+
+-- SQLite accepts single quotes at a table-source position, never as SQL text.
+for _, statement in ipairs({
+  "SELECT i.id FROM 'items' AS i",
+  "SELECT i.id FROM 'main'.'items' AS i",
+  "UPDATE 'items' AS i SET id=1",
+  "INSERT INTO 'items' AS i (id) VALUES(1)",
+}) do
+  local expected = statement:find("'main'", 1, true) and "main.items" or "items"
+  eq(ea(statement, "sqlite").i, expected, "SQLite single-quoted table source: " .. statement)
+end
+eq(ea("SELECT i.id FROM 'odd''table' AS i", "sqlite").i, "odd'table",
+  "SQLite escaped single-quoted table source")
+eq(ea("SELECT 'FROM users fake', i.id FROM 'items' AS i", "sqlite").fake, nil,
+  "SQLite source quoting does not expose string content as SQL")
+for _, kind in ipairs({ "postgresql", "mysql", "sqlserver" }) do
+  eq(ea("SELECT i.id FROM 'items' AS i", kind).i, nil,
+    kind .. " does not accept a literal as an ordinary table source")
+end
+
+-- An opening bracket inside a bracketed identifier is part of its name.
+do
+  local restore = mock_db({ items = { { column_name = "id", data_type = "integer" } } })
+  for _, case in ipairs({ { "sqlite", SQLITE_URL }, { "sqlserver", "sqlserver://localhost/completion_brackets" } }) do
+    local kind, url = case[1], case[2]
+    completion.invalidate(url)
+    local aliases = ea("SELECT [a[b].id FROM items AS [a[b]", kind)
+    if kind == "sqlite" then
+      local items = completion.complete("SELECT $id, [a[b].", url, aliases)
+      eq(items[1] and items[1].word, "id", "cold SQLite bracket context keeps parameter grammar")
+    end
+    for _, before in ipairs({
+      "SELECT [a[b].", "WHERE [other] = 1 AND [a[b].",
+      "SELECT '[ignored]' AS text, [a[b].", "SELECT /* [ignored */ [a[b].",
+    }) do
+      local context = completion.parse_context_full(before)
+      eq(context and context.qualifier, "a[b", "bracket qualifier preserves opening bracket: " .. before)
+      local items = completion.complete(before, url, aliases)
+      eq(items[1] and items[1].word, "id", kind .. " completes bracket qualifier: " .. before)
+    end
+  end
+  local aliases = ea("SELECT [a]]b[c].id FROM items AS [a]]b[c]", "sqlserver")
+  local items = completion.complete("SELECT [a]]b[c].", "sqlserver://localhost/completion_brackets", aliases)
+  eq(items[1] and items[1].word, "id", "SQL Server escaped closing and embedded opening brackets")
+  restore()
+end
+
+-- Ambiguous bracket context follows the complete SQL prefix and its dialect,
+-- while column typing keeps the current word independent of qualifier lookup.
+do
+  local first = completion.parse_context_full("SELECT [a[b].i", "sqlserver")
+  eq(first.qualifier, "a[b", "ambiguous bracket context resolves initial qualifier")
+  eq(first.word, "i", "ambiguous bracket context keeps initial column prefix")
+  local typed = completion.parse_context_full("SELECT [a[b].id", "sqlserver")
+  eq(typed.qualifier, "a[b", "column typing retains ambiguous bracket qualifier")
+  eq(typed.word, "id", "column typing updates the completion word")
+  eq(completion.parse_context_full("SELECT [x[y].", "sqlserver").qualifier, "x[y",
+    "changing ambiguous qualifier replaces previous context")
+  eq(completion.parse_context_full("SELECT '[x[y].", "sqlserver").qualifier, nil,
+    "changed preceding SQL cannot reuse a qualifier now inside a string")
+  local text = "SELECT $id, [a[b]."
+  eq(completion.parse_context_full(text, "sqlite").qualifier, "a[b",
+    "SQLite parameter permits ambiguous bracket context")
+  eq(completion.parse_context_full(text, "sqlserver").qualifier, nil,
+    "dialect change does not reuse SQLite parameter parsing")
+  eq(completion.parse_context_full(text, "sqlite").qualifier, "a[b",
+    "switching back restores matching dialect context")
+end
+
+-- MySQL column identifiers are case-insensitive even when table names are not.
+do
+  local restore = mock_db({ items = {
+    { column_name = "Total", data_type = "numeric" },
+    { column_name = "ID", data_type = "integer" },
+  } })
+  completion.invalidate(MYSQL_URL)
+  for _, statement in ipairs({
+    "INSERT INTO items(Total,ID) VALUES(1,2) AS new(amount,key_id)",
+    "INSERT INTO items(`TOTAL`,`id`) VALUES(1,2) AS new(amount,key_id)",
+    "INSERT INTO items SET TOTAL=1,id=2 AS new(amount,key_id)",
+  }) do
+    local menus = {}
+    for _, entry in ipairs(completion.complete("SET Total=new.", MYSQL_URL, ea(statement, "mysql"))) do
+      menus[entry.word] = entry.menu
+    end
+    eq(menus.amount, "[numeric]", "MySQL source column case preserves numeric alias type")
+    eq(menus.key_id, "[integer]", "MySQL source column case preserves integer alias type")
+  end
+  restore()
+end
+
 -- ── summary ───────────────────────────────────────────────────────────────────
 print(string.format("\ncompletion_spec: %d passed, %d failed", pass, fail))
 if fail > 0 then os.exit(1) end

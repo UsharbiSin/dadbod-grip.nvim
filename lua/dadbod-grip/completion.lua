@@ -127,12 +127,18 @@ local function alias_name(token)
   if token.upper then return token.text:lower() end
   return token.text
 end
-local function alias_source(tokens, pos)
-  if not tokens[pos] or tokens[pos].kind ~= "ident" then return nil, pos end
+local function source_identifier(token, adapter_kind)
+  -- SQLite permits single quotes only where a table identifier is expected.
+  -- Other literal tokens (numbers and parameters) have no text to use here.
+  return token and (token.kind == "ident"
+    or (adapter_kind == "sqlite" and token.kind == "literal" and token.text ~= nil))
+end
+local function alias_source(tokens, pos, adapter_kind)
+  if not source_identifier(tokens[pos], adapter_kind) then return nil, pos end
   local names = { alias_name(tokens[pos]) }
   pos = pos + 1
   while tokens[pos] and tokens[pos].kind == "." do
-    if not tokens[pos + 1] or tokens[pos + 1].kind ~= "ident" then return nil, pos end
+    if not source_identifier(tokens[pos + 1], adapter_kind) then return nil, pos end
     names[#names + 1] = alias_name(tokens[pos + 1])
     pos = pos + 2
   end
@@ -192,12 +198,12 @@ local function delete_from_target(tokens, from_pos, matching)
   return tokens[pos] and tokens[pos].upper == "DELETE", matching
 end
 
-local function insert_aliases(tokens, aliases, explicit, pos)
+local function insert_aliases(tokens, aliases, explicit, pos, adapter_kind)
   if tokens[pos] and tokens[pos].upper == "OR" then pos = pos + 2 end
   while tokens[pos] and insert_modifiers[tokens[pos].upper] do pos = pos + 1 end
   if tokens[pos] and tokens[pos].upper == "INTO" then pos = pos + 1 end
   local target
-  target, pos = alias_source(tokens, pos)
+  target, pos = alias_source(tokens, pos, adapter_kind)
   if not target then return end
   pos = target_alias(tokens, aliases, explicit, target, pos, false)
   if tokens[pos] and tokens[pos].upper == "PARTITION" then
@@ -270,7 +276,7 @@ function M.extract_aliases(sql_text, adapter_kind)
             source_pos = source_pos + 1
           end
         end
-        local target, pos = alias_source(tokens, source_pos)
+        local target, pos = alias_source(tokens, source_pos, adapter_kind)
         if target then
           if adapter_kind == "mysql" and tokens[pos] and tokens[pos].upper == "PARTITION" then
             local partitions, after = column_list(tokens, pos + 1)
@@ -285,7 +291,7 @@ function M.extract_aliases(sql_text, adapter_kind)
           if not is_clause then target_alias(tokens, aliases, explicit, target, pos, true) end
         end
       elseif keyword == "INSERT" or keyword == "REPLACE" then
-        insert_aliases(tokens, aliases, explicit, idx + 1)
+        insert_aliases(tokens, aliases, explicit, idx + 1, adapter_kind)
       end
     end
   end
@@ -331,8 +337,30 @@ vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
 
 -- ── Context parsing ────────────────────────────────────────────────────────────
 
+-- A prior unclosed [ can belong to this identifier: embedded opening brackets
+-- are ordinary text. Most qualifiers have no earlier [ or follow a closed one.
+local function ambiguous_bracket(before, opening)
+  if before:find("[", 1, true) == opening then return false end
+  local pos = opening - 1
+  while pos > 0 do
+    local byte = before:byte(pos)
+    if byte == 91 then return true end
+    if byte == 93 then
+      if before:byte(pos - 1) ~= 93 then return false end
+      pos = pos - 2
+    else
+      pos = pos - 1
+    end
+  end
+  return false
+end
+
+-- A single ambiguous prefix is enough for cursor movement and column typing.
+-- Retain no buffer history; earlier SQL, qualifier, or dialect changes replace it.
+local _bracket_context_cache
+
 -- Read a trailing qualifier without interpreting text inside its quotes as SQL.
-local function dotted_qualifier(before)
+local function dotted_qualifier(before, adapter_kind)
   local qualifier, word = before:match("([%w_$\128-\255]+)%.([%w_$\128-\255]*)$")
   if qualifier then return qualifier, word, false end
   local dot, quoted_word = before:match("()%.([%w_$\128-\255]*)$")
@@ -347,6 +375,22 @@ local function dotted_qualifier(before)
     if ch == close and before:sub(pos - 1, pos - 1) == close then
       pos = pos - 2
     elseif ch == opening then
+      if close == "]" and ambiguous_bracket(before, pos) then
+        local prefix, kind = before:sub(1, dot), adapter_kind or "sqlserver"
+        local cached = _bracket_context_cache
+        if not cached or cached.prefix ~= prefix or cached.kind ~= kind then
+          -- Resolve embedded brackets with the shared lexer, only for this line.
+          local tokens = require("dadbod-grip.sql_tokens").tokenize(
+            before:sub(1, finish), kind, "completion_positions")
+          local last = tokens and tokens[#tokens]
+          local name
+          if last and last.kind == "ident" and last.finish == finish
+              and before:sub(last.start, last.start) == "[" then name = last.text end
+          cached = { prefix = prefix, kind = kind, qualifier = name }
+          _bracket_context_cache = cached
+        end
+        return cached.qualifier, quoted_word, true
+      end
       local text = before:sub(pos + 1, finish - 1)
       return text:gsub(close .. close, close), quoted_word, true
     else
@@ -358,7 +402,7 @@ end
 --- Classify the SQL text before the cursor.
 --- Returns one of: "table", "column", "dotted", "fed_column", or nil.
 --- (Simple string result for the most common cases.)
-function M.parse_context(before)
+function M.parse_context(before, adapter_kind)
   if not before or before == "" then return nil end
   -- Strip trailing comment
   if before:match("^%-%-") then return nil end
@@ -371,7 +415,7 @@ function M.parse_context(before)
   end
 
   -- dotted: qualifier.word (two-part)
-  if dotted_qualifier(before) then
+  if dotted_qualifier(before, adapter_kind) then
     return "dotted"
   end
 
@@ -397,7 +441,7 @@ end
 
 --- Full context parse: returns structured table with type, word, qualifier, alias, table fields.
 --- Used by omnifunc and by tests that need the full detail.
-function M.parse_context_full(before)
+function M.parse_context_full(before, adapter_kind)
   if not before or before == "" then return nil end
   if before:match("^%-%-") then return nil end
 
@@ -408,7 +452,7 @@ function M.parse_context_full(before)
   end
 
   -- dotted: qualifier.word
-  local qualifier, qword, quoted = dotted_qualifier(before)
+  local qualifier, qword, quoted = dotted_qualifier(before, adapter_kind)
   if qualifier then
     return { type = "dotted", qualifier = qualifier, word = qword, quoted = quoted }
   end
@@ -455,12 +499,22 @@ local SQL_KEYWORDS = {
   "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "NULLIF", "CAST",
 }
 
+-- Only bracketed qualifiers need dialect-aware tokenization of the cursor
+-- line. Reuse warmed schema metadata; a cold bracket request resolves it once.
+local function context_kind(before, url)
+  local cached = _cache[url]
+  if cached then return cached.kind end
+  if before:match("%]%.[%w_$\128-\255]*$") then
+    return require("dadbod-grip.adapters").kind(require("dadbod-grip.db").resolved_url(url))
+  end
+end
+
 --- Return completion items for `before` (text before cursor) and the given URL.
 --- Optional `aliases` table maps SQL alias -> table_name for dotted completion.
 --- Returns array of { word, menu } items.
 function M.complete(before, url, aliases)
   aliases = aliases or {}
-  local ctx = M.parse_context_full(before)
+  local ctx = M.parse_context_full(before, context_kind(before, url))
   if not ctx then
     -- No SQL context yet: complete keywords by prefix (e.g. "SEL" -> "SELECT").
     local word = before:match("([%w_]*)$") or ""
@@ -524,9 +578,14 @@ function M.complete(before, url, aliases)
         -- Column aliases rename the inserted values in their declared order.
         -- An explicit INSERT column list can differ from the table's order.
         local by_name = {}
-        for _, col in ipairs(cols) do by_name[col.column_name] = col end
+        local fold_columns = cached_schema and cached_schema.kind == "mysql"
+        for _, col in ipairs(cols) do
+          local name = fold_columns and col.column_name:lower() or col.column_name
+          by_name[name] = col
+        end
         for idx, cname in ipairs(row_alias.columns) do
           local source_name = row_alias.source_columns and row_alias.source_columns[idx]
+          if source_name and fold_columns then source_name = source_name:lower() end
           local col = source_name and by_name[source_name] or (not row_alias.source_columns and cols[idx])
           if cname:sub(1, #ctx.word) == ctx.word then
             table.insert(items, item(cname, "[" .. (col and col.data_type or "?") .. "]"))
@@ -729,7 +788,7 @@ function M.setup_auto_complete(bufnr, url_fn)
 
         -- Require ≥1 word char OR a trailing dot (dotted context: supplier., alias.).
         local word = before:match("([%w_]*)$") or ""
-        local in_dotted_ctx = dotted_qualifier(before) ~= nil
+        local in_dotted_ctx = dotted_qualifier(before, context_kind(before, url)) ~= nil
         if word == "" and not in_dotted_ctx then return end
 
         local aliases = M._get_cached_aliases(bufnr, url)
