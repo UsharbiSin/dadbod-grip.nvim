@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pending mutation previews ignore repeated apply and cancellation while their
+  confirmation or write is running. Successful writes consume the pending SQL
+  before notifications, history, or refresh can fail, preventing a second apply
+  after a post-write UI error.
 - MySQL/MariaDB default-row inserts translate SQL tokens instead of replacing
   matching text inside data, quoted identifiers, or comments. Mixed-case and
   comment-separated `DEFAULT VALUES` clauses work without rewriting their

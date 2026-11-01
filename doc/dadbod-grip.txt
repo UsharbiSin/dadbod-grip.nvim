@@ -1010,6 +1010,11 @@ All DML is wrapped in a transaction. If any statement fails, the entire
 transaction is rolled back and your staged changes are preserved so you
 can fix the value and retry.
 
+For SQL mutation previews opened with :Grip, `a` confirms the pending SQL.
+While confirmation or execution is in progress, repeated `a` and cancellation
+with `u` or `U` are ignored. A successful write consumes the pending SQL even
+if its notification, history update, or grid refresh subsequently fails.
+
 Multi-level undo: every edit operation pushes the previous state onto a
 50-deep undo stack. Press `u` repeatedly to step back through your edit
 history. Press `U` to reset to the original state in one step.
