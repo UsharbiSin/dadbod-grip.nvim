@@ -490,7 +490,12 @@ All commands are global and available after the plugin loads.
   DELETE may omit FROM.
   Press a to confirm the original SQL or u/U to cancel.
   Recognized WITH-prefixed mutations confirm the entire SQL directly; this
-  also covers SQL Server's optional INTO/FROM and table-variable targets.
+  also covers SQL Server's optional INTO/FROM and table-variable targets,
+  and MySQL/MariaDB DELETE modifiers. MERGE in PostgreSQL, DuckDB, and SQL
+  Server uses this whole-statement confirmation instead of a row preview.
+  PostgreSQL composite fields and SQL Server UDT properties are not predicted
+  as scalar column changes. SQL Server column mapping preserves exact case;
+  case-insensitive fallback is used only for an unambiguous metadata match.
 
   Ordinary INSERT VALUES shows literal incoming rows, preserving the column
   list, NULLs, and empty strings. MySQL INSERT SET and row/column aliases,
@@ -506,6 +511,8 @@ All commands are global and available after the plugin loads.
   rejected rather than showing an incomplete affected-row set. A transaction
   containing one mutation and ending in COMMIT can be previewed; execution
   retains the entire transaction. ROLLBACK blocks are not previewed or run.
+  SQL Server's unseparated extra commands and client command escapes are
+  rejected before querying preview data.
 
   The existing preview still omits top-level ORDER BY/LIMIT, so its count is
   the matching row set before those restrictions. Nested ORDER BY/LIMIT remain

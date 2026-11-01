@@ -55,36 +55,51 @@ end
 
 local cases = {
   {
+    name = "SQL Server client-shaped assignment names beside operators", kind = "sqlserver",
+    sql = "UPDATE items SET\nreset=1,\ned=1,\nquit=1,\nexit=1,\nvalue='changed' WHERE\ngo=2",
+    select = "SELECT * FROM \"items\" WHERE (go=2)", value = "changed",
+  },
+  {
+    name = "SQL Server ON ERROR identifier beside operator", kind = "sqlserver",
+    sql = "INSERT items(id,value) SELECT 3, other.value FROM other JOIN third\nON error=third.id",
+    select = "SELECT * FROM \"items\"",
+  },
+  {
+    name = "SQL Server split ON and ERROR identifiers", kind = "sqlserver",
+    sql = "INSERT items(id,value) SELECT 3, other.value FROM other JOIN third\nON\nerror=third.id",
+    select = "SELECT * FROM \"items\"",
+  },
+  {
     name = "SQL Server unquoted OUTPUT assignment column", kind = "sqlserver",
     sql = "UPDATE items SET output=1, value='changed' WHERE id=2",
-    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+    select = 'SELECT * FROM "items" WHERE (id=2)', value = "changed",
   },
   {
     name = "SQL Server OUTPUT column expression before OUTPUT clause", kind = "sqlserver",
     sql = "UPDATE items SET value=output OUTPUT inserted.value WHERE id=2",
-    select = 'SELECT * FROM "items" WHERE id=2',
+    select = 'SELECT * FROM "items" WHERE (id=2)',
   },
   {
     name = "SQL Server OUTPUT and RETURNING result aliases", kind = "sqlserver",
     sql = "UPDATE items SET value='changed' OUTPUT inserted.id AS output, inserted.value AS returning WHERE id=2",
-    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+    select = 'SELECT * FROM "items" WHERE (id=2)', value = "changed",
   },
   {
     name = "SQL Server UPDATE OUTPUT before WHERE", kind = "sqlserver",
     sql = "UPDATE items SET value='changed' OUTPUT inserted.id, deleted.value WHERE id=2",
-    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+    select = 'SELECT * FROM "items" WHERE (id=2)', value = "changed",
   },
   {
     name = "SQL Server UPDATE OUTPUT INTO destination list", kind = "sqlserver",
     sql = "UPDATE items SET value='changed' OUTPUT inserted.id, CONCAT(deleted.value,',',inserted.value)"
       .. " INTO audit_items(id,value) WHERE id=2 OPTION (RECOMPILE)",
-    select = 'SELECT * FROM "items" WHERE id=2', value = "changed",
+    select = 'SELECT * FROM "items" WHERE (id=2)', value = "changed",
   },
   {
     name = "SQL Server UPDATE two OUTPUT clauses and nested SET", kind = "sqlserver",
     sql = "UPDATE items SET value=CONCAT('x',',y') OUTPUT inserted.id INTO @audit(id)"
       .. " OUTPUT inserted.value WHERE id IN (SELECT id FROM other WHERE value='OUTPUT')",
-    select = 'SELECT * FROM "items" WHERE id IN (SELECT id FROM other WHERE value=\'OUTPUT\')',
+    select = 'SELECT * FROM "items" WHERE (id IN (SELECT id FROM other WHERE value=\'OUTPUT\'))',
   },
   {
     name = "SQL Server UPDATE OUTPUT without WHERE", kind = "sqlserver",
@@ -94,17 +109,17 @@ local cases = {
   {
     name = "SQL Server DELETE OUTPUT before WHERE", kind = "sqlserver",
     sql = "DELETE FROM items OUTPUT deleted.id, deleted.value WHERE id=2",
-    select = 'SELECT * FROM "items" WHERE id=2',
+    select = 'SELECT * FROM "items" WHERE (id=2)',
   },
   {
     name = "SQL Server DELETE optional FROM and OUTPUT INTO", kind = "sqlserver",
     sql = "DELETE items OUTPUT deleted.id INTO audit_items(id) WHERE id=2",
-    select = 'SELECT * FROM "items" WHERE id=2',
+    select = 'SELECT * FROM "items" WHERE (id=2)',
   },
   {
     name = "SQL Server DELETE quoted optional FROM target", kind = "sqlserver",
     sql = "DELETE [dbo].[items] OUTPUT deleted.[id] WHERE [id]=2",
-    table_name = "dbo.items", select = 'SELECT * FROM "dbo"."items" WHERE [id]=2',
+    table_name = "dbo.items", select = 'SELECT * FROM "dbo"."items" WHERE ([id]=2)',
   },
   {
     name = "SQL Server DELETE OUTPUT without WHERE", kind = "sqlserver",
@@ -114,12 +129,109 @@ local cases = {
   {
     name = "SQL Server DELETE alias source", kind = "sqlserver",
     sql = "DELETE i FROM items AS i WHERE i.id=2",
-    select = 'SELECT * FROM "items" AS i WHERE i.id=2',
+    select = 'SELECT * FROM "items" AS i WHERE (i.id=2)',
   },
   {
     name = "SQL Server trailing OPTION hint", kind = "sqlserver",
     sql = "DELETE FROM items OPTION (RECOMPILE)",
     select = 'SELECT * FROM "items"',
+  },
+  {
+    name = "SQL Server keyword-shaped variables and OUTPUT fields", kind = "sqlserver",
+    sql = "UPDATE items SET value=@update OUTPUT inserted.[delete] WHERE id=@delete",
+    select = 'SELECT * FROM "items" WHERE (id=@delete)',
+  },
+  {
+    name = "SQL Server nested SELECT stays inside predicate", kind = "sqlserver",
+    sql = "UPDATE items SET value='changed' WHERE id IN (SELECT id FROM other)",
+    select = 'SELECT * FROM "items" WHERE (id IN (SELECT id FROM other))', value = "changed",
+  },
+  {
+    name = "SQL Server INSERT source set operations", kind = "sqlserver",
+    sql = "INSERT items(id,value) SELECT 3,'three' UNION ALL SELECT 4,'four'"
+      .. " EXCEPT SELECT 5,'five' INTERSECT SELECT 3,'three'",
+    select = 'SELECT * FROM "items"',
+  },
+  {
+    name = "SQL Server multiline comparison and static operator", kind = "sqlserver",
+    sql = "UPDATE items SET value='changed' WHERE id\n!= dbo.Number\n::Parse('1')",
+    select = 'SELECT * FROM "items" WHERE (id\n!= dbo.Number\n::Parse(\'1\'))', value = "changed",
+  },
+  {
+    name = "SQL Server GO column is not a standalone batch separator", kind = "sqlserver",
+    sql = "UPDATE items SET value=go OUTPUT inserted.go WHERE go=2",
+    select = 'SELECT * FROM "items" WHERE (go=2)',
+  },
+  {
+    name = "SQL Server CASE END with a conversation result alias", kind = "sqlserver",
+    sql = "INSERT items(id,value) SELECT 3, CASE WHEN 1=1 THEN 'new' ELSE 'old' END conversation",
+    select = 'SELECT * FROM "items"',
+  },
+  {
+    name = "SQL Server nested CASE expressions preserve END", kind = "sqlserver",
+    sql = "UPDATE items SET value=CASE WHEN id=2 THEN CASE WHEN id>1 THEN 'new' END ELSE 'old' END"
+      .. " WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE (id=2)',
+  },
+  {
+    name = "SQL Server client command words in quoted identifiers", kind = "sqlserver",
+    sql = "UPDATE items SET value='changed' WHERE [EXIT]=2 AND [RESET]=1",
+    select = 'SELECT * FROM "items" WHERE ([EXIT]=2 AND [RESET]=1)', value = "changed",
+  },
+  {
+    name = "SQL Server client command text inside a literal", kind = "sqlserver",
+    sql = "UPDATE items SET value='GO\n:r fixture.sql\n!! command' WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE (id=2)', value = "GO\n:r fixture.sql\n!! command",
+  },
+  {
+    name = "PostgreSQL quoted backslash text stays data", kind = "postgresql",
+    sql = "UPDATE items SET value=$v$\\gexec$v$ WHERE id=2",
+    select = 'SELECT * FROM "items" WHERE id=2', value = "\\gexec",
+  },
+  {
+    name = "SQLite backtick identifiers", kind = "sqlite",
+    sql = "UPDATE `items` SET `value`='changed' WHERE `id`=2",
+    select = "SELECT * FROM \"items\" WHERE `id`=2", value = "changed",
+  },
+  {
+    name = "SQLite bracket identifiers", kind = "sqlite",
+    sql = "UPDATE [items] SET [value]='changed' WHERE [id]=2",
+    select = "SELECT * FROM \"items\" WHERE [id]=2", value = "changed",
+  },
+  {
+    name = "SQLite double-quoted identifiers", kind = "sqlite",
+    sql = "UPDATE \"items\" SET \"value\"='changed' WHERE \"id\"=2",
+    select = "SELECT * FROM \"items\" WHERE \"id\"=2", value = "changed",
+  },
+  {
+    name = "MySQL backtick identifiers", kind = "mysql",
+    sql = "UPDATE `items` SET `value`='changed' WHERE `id`=2",
+    select = "SELECT * FROM \"items\" WHERE `id`=2", value = "changed",
+  },
+  {
+    name = "MySQL ANSI double-quoted identifiers", kind = "mysql",
+    sql = "UPDATE \"items\" SET \"value\"='changed' WHERE \"id\"=2",
+    select = "SELECT * FROM \"items\" WHERE \"id\"=2", value = "changed",
+  },
+  {
+    name = "DuckDB double-quoted identifiers", kind = "duckdb",
+    sql = "UPDATE \"items\" SET \"value\"='changed' WHERE \"id\"=2",
+    select = "SELECT * FROM \"items\" WHERE \"id\"=2", value = "changed",
+  },
+  {
+    name = "DuckDB 2.0 backtick identifiers", kind = "duckdb",
+    sql = "UPDATE `items` SET `value`='changed' WHERE `id`=2",
+    select = "SELECT * FROM \"items\" WHERE `id`=2", value = "changed",
+  },
+  {
+    name = "SQL Server doubled bracket identifier remains valid", kind = "sqlserver",
+    sql = "UPDATE [items] SET [value]='changed' WHERE [odd]]name]=2",
+    select = 'SELECT * FROM "items" WHERE ([odd]]name]=2)', value = "changed",
+  },
+  {
+    name = "SQL Server double-quoted identifiers", kind = "sqlserver",
+    sql = "UPDATE \"items\" SET \"value\"='changed' WHERE \"id\"=2",
+    select = "SELECT * FROM \"items\" WHERE (\"id\"=2)", value = "changed",
   },
   {
     name = "MySQL trailing hash comment", kind = "mysql",
@@ -199,6 +311,12 @@ for _, case in ipairs(cases) do
 end
 
 for _, case in ipairs({
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\nGO 1 ignored" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\nGO\t1ignored" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\nON ERROR IGNORE" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id IN (\nON ERROR IGNORE\nSELECT 2)" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id IN (\nON ERROR IGNORE\nGO 1 ignored\nDELETE FROM other\nGO 1 ignored\nSELECT 2)" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id IN (\nGO arbitrary tail\nSELECT 2)" },
   { kind = "sqlserver", sql = "UPDATE i SET value='changed' OUTPUT inserted.id FROM items AS i WHERE i.id=2" },
   { kind = "sqlserver", sql = "DELETE i OUTPUT deleted.id FROM items AS i JOIN other AS o ON i.id=o.id" },
   { kind = "sqlserver", sql = "UPDATE items SET value='changed' OUTPUT inserted.id; DELETE FROM items" },
@@ -211,6 +329,43 @@ for _, case in ipairs({
   { kind = "postgresql", sql = "DELETE FROM items USING other WHERE items.id=other.id" },
   { kind = "mysql", sql = "UPDATE LOW_PRIORITY items SET value='changed' WHERE id=2" },
   { kind = "postgresql", sql = "UPDATE ONLY items SET value='changed' WHERE id=2" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' WHERE id=2 DELETE FROM other" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2 UPDATE other SET value='changed'" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2 EXEC dbo.cleanup" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' WHERE id=2 EXECUTE dbo.cleanup" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' WHERE id=2 SELECT 1 INTO other" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3,'three' DELETE FROM other" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3,'three' EXEC dbo.cleanup" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3,'three' SET IDENTITY_INSERT other ON" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3,'three' SELECT 1 INTO other" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' WHERE id=2\nGO 3 -- repeat" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3,'three'\n/* separator */ GO\nDELETE FROM other" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' WHERE id IN (\nGO\nDELETE FROM other\nGO\nSELECT 2)" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' WHERE id=2\n:r fixture.sql" },
+  { kind = "sqlserver", sql = "UPDATE items SET value='changed' WHERE id IN (\n:r fixture.sql\nSELECT 2)" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\n:setvar name value" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\n:connect unused" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\n!! echo fixture" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\nEXIT(DELETE FROM other)" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3,'three'\nEXIT(DELETE FROM other)" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id IN (\nEXIT(DELETE FROM other)\nSELECT 2)" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\nQUIT" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\nRESET" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2\nED" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=dbo.Number:\n:!! echo fixture" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=dbo.Number::\n:r fixture.sql" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=dbo.Number:\n:EXIT(DELETE FROM other)" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=2 END CONVERSATION @handle" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3,'three' END CONVERSATION @handle" },
+  { kind = "sqlserver", sql = "INSERT items SELECT 3, CASE WHEN 1=1 THEN 'new' END conversation"
+    .. " END CONVERSATION @handle" },
+  { kind = "postgresql", sql = "DELETE FROM items WHERE id=2 \\gexec" },
+  { kind = "postgresql", sql = "UPDATE items SET value='changed' WHERE id=2\n\\! echo fixture" },
+  { kind = "mysql", sql = "DELETE FROM items WHERE id=2\n\\! echo fixture" },
+  { kind = "sqlserver", sql = "DELETE items WHERE id=`\n:!! echo fixture\n`" },
+  { kind = "postgresql", sql = "DELETE FROM items WHERE id=`\\! echo fixture`" },
+  { kind = "mysql", sql = "DELETE FROM items WHERE id=[\\! echo fixture]" },
+  { kind = "sqlite", sql = "DELETE FROM items WHERE id=[x]];\nDELETE FROM other;\n--]" },
 }) do
   test("reject unsupported source: " .. case.sql, function()
     grip._mutation_preview(case.sql, case.kind .. "://unused/fixture", case.sql:match("^%u+"), {})

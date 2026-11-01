@@ -120,10 +120,31 @@ local tokenize_select = require("dadbod-grip.sql_tokens").tokenize
 -- Ordinary statements keep the cheap keyword check. Leading SQL comments need
 -- the same lexical boundaries as previews, while the original text stays intact.
 local function statement_type(text, adapter_kind)
-  local keyword = text:match("^%s*([%a]+)")
+  local keyword = text:match("^%s*([%a_\128-\255][%w_$\128-\255]*)")
   if keyword then return keyword:upper() end
   local tokens = tokenize_select(text, adapter_kind, true)
   return tokens and tokens[1] and tokens[1].upper
+end
+
+-- Locate the command after a conventional WITH list only when SQL Server's
+-- optional-INTO MERGE needs it. Keeping this lazy avoids another scan for
+-- ordinary CTE queries; aliases named merge must not become write commands.
+local function cte_command_index(tokens)
+  local depth, body, after_body = 0, false, false
+  for idx = 2, #tokens do
+    local token = tokens[idx]
+    if after_body then
+      if token.kind ~= "," then return idx end
+      after_body = false
+    elseif token.kind == "(" then
+      if depth == 0 and tokens[idx - 1].upper == "AS" then body = true end
+      depth = depth + 1
+    elseif token.kind == ")" then
+      depth = depth - 1
+      if depth == 0 and body then body, after_body = false, true end
+    end
+  end
+  return 0
 end
 
 -- Expose metadata only for direct columns of one known source. A dotted name
@@ -321,11 +342,27 @@ local function resolve_query(arg, page_size, adapter_kind)
   if upper == "WITH" then
     local tokens = tokenize_select(arg, adapter_kind, true)
     if not tokens then return nil, "Could not safely classify this WITH statement" end
+    local outer_command
     for idx, token in ipairs(tokens) do
       local next_token, previous = tokens[idx + 1], tokens[idx - 1]
-      if next_token and (not previous or previous.kind ~= ".")
-          and not (adapter_kind == "sqlserver" and previous and previous.kind == "@")
-          and ((token.upper == "UPDATE" and next_token.kind == "ident")
+      local update_lock = token.upper == "UPDATE" and previous
+        and (previous.upper == "FOR" or (previous.upper == "KEY"
+          and tokens[idx - 2] and tokens[idx - 2].upper == "NO"
+          and tokens[idx - 3] and tokens[idx - 3].upper == "FOR"))
+      if next_token and (not previous or (previous.kind ~= "." and previous.kind ~= "@"))
+          and not (adapter_kind == "sqlite" and previous and previous.kind == ":")
+          and not update_lock then
+        if token.upper == "MERGE" then
+          if next_token.upper == "INTO" and (adapter_kind == "postgresql"
+              or adapter_kind == "duckdb" or adapter_kind == "sqlserver") then
+            return nil, nil, nil, arg
+          elseif adapter_kind == "sqlserver"
+              and (next_token.kind == "ident" or next_token.kind == "@") then
+            outer_command = outer_command or cte_command_index(tokens)
+            if idx == outer_command then return nil, nil, nil, arg end
+          end
+        end
+        if ((token.upper == "UPDATE" and next_token.kind == "ident")
           or (token.upper == "DELETE" and next_token.upper == "FROM")
           or (token.upper == "INSERT" and (next_token.upper == "INTO" or next_token.upper == "OR"))
           or (token.upper == "REPLACE" and next_token.upper == "INTO")
@@ -333,11 +370,28 @@ local function resolve_query(arg, page_size, adapter_kind)
           -- Keep these CTE writes on the same whole-statement confirmation path.
           or (adapter_kind == "sqlserver"
             and (token.upper == "INSERT" or token.upper == "DELETE" or token.upper == "UPDATE")
-            and (next_token.kind == "ident" or next_token.kind == "@"))) then
-        return nil, nil, nil, arg
+            and (next_token.kind == "ident" or next_token.kind == "@"))
+          -- MySQL/MariaDB DELETE permits priority modifiers and target aliases
+          -- before FROM. WITH keeps whole-statement confirmation for these too.
+          or (adapter_kind == "mysql" and token.upper == "DELETE"
+            and next_token.kind == "ident")) then
+          return nil, nil, nil, arg
+        end
       end
     end
     return query.new_raw(arg, page_size), nil
+  end
+  -- MERGE has no row-preview model. Preserve the original statement behind
+  -- whole-statement confirmation, consistently with mutating WITH statements.
+  if upper == "MERGE" and (adapter_kind == "postgresql"
+      or adapter_kind == "duckdb" or adapter_kind == "sqlserver") then
+    local tokens = tokenize_select(arg, adapter_kind, true)
+    if not tokens then return nil, "Could not safely classify this MERGE statement" end
+    local target = tokens[2]
+    if target and (target.upper == "INTO" or (adapter_kind == "sqlserver"
+        and (target.kind == "ident" or target.kind == "@"))) then
+      return nil, nil, nil, arg
+    end
   end
   -- REPLACE INTO (MySQL/SQLite): route through mutation preview like INSERT
   if upper == "REPLACE" then
@@ -806,6 +860,22 @@ local function do_edit(bufnr, cell, url)
 end
 
 -- ── mutation preview ──────────────────────────────────────────────────────
+local function preview_columns(names, kind)
+  local columns, exact = {}, kind == "sqlserver" and {} or nil
+  for _, column in ipairs(names) do
+    local key = kind == "postgresql" and column or column:lower()
+    -- SQL Server may distinguish Value and value under its catalog collation.
+    -- Use exact metadata first; folded spelling is usable only when unique.
+    if exact then
+      exact[column] = column
+      columns[key] = columns[key] == nil and column or false
+    else
+      columns[key] = column
+    end
+  end
+  return columns, exact
+end
+
 -- Shows matching or current rows before executing UPDATE/DELETE/INSERT/REPLACE.
 function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts, execution_sql)
   local kind = adapters.kind(db.resolved_url(url))
@@ -818,7 +888,12 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts, executio
   local inserting = stmt_type == "INSERT" or stmt_type == "REPLACE"
   local table_name = parsed.table_name
   local preview_sql = "SELECT * FROM " .. parsed.source_sql
-  if parsed.where and parsed.where ~= "" then preview_sql = preview_sql .. " WHERE " .. parsed.where end
+  if parsed.where and parsed.where ~= "" then
+    -- T-SQL does not require statement separators. Keep its balanced predicate
+    -- inside one expression even if an unrecognized command follows it.
+    local predicate = kind == "sqlserver" and ("(" .. parsed.where .. ")") or parsed.where
+    preview_sql = preview_sql .. " WHERE " .. predicate
+  end
 
   local preview = ui.blocking("  previewing " .. spinner_label(table_name) .. "...", function()
     -- Run preview query
@@ -849,13 +924,24 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts, executio
     -- Stage only parsed literal assignments. Expressions are executed by the
     -- database on confirmation; their text is not a predicted cell value.
     if stmt_type == "UPDATE" and row_count > 0 then
-      local columns = {}
-      for _, column in ipairs(state.columns) do
-        columns[kind == "postgresql" and column or column:lower()] = column
+      local columns, exact = preview_columns(state.columns, kind)
+      local assignments = parsed.assignments
+      if exact then
+        -- Resolve names before discarding repeated or unknown assignments:
+        -- differently-cased spellings may refer to one column or two.
+        local latest = {}
+        for _, assignment in ipairs(assignments) do
+          local column = exact[assignment.column] or columns[assignment.column:lower()]
+          if column then
+            latest[column] = assignment.known ~= false and assignment or nil
+          end
+        end
+        assignments = {}
+        for _, assignment in pairs(latest) do assignments[#assignments + 1] = assignment end
       end
-      for _, assignment in ipairs(parsed.assignments) do
+      for _, assignment in ipairs(assignments) do
         local key = kind == "postgresql" and assignment.column or assignment.column:lower()
-        local column = columns[key]
+        local column = (exact and exact[assignment.column]) or columns[key]
         if column then
           -- This state has not been published yet: fill it once instead of
           -- copying every previously staged row for each cell. SQL empty
@@ -879,17 +965,15 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts, executio
     -- Stage complete literal tuples only. Conflict handling, defaults and
     -- computed rows show current state; confirmation still runs original SQL.
     if inserting then
-      local insert_rows, columns = {}, {}
-      for _, column in ipairs(result.columns) do
-        columns[kind == "postgresql" and column or column:lower()] = column
-      end
+      local insert_rows = {}
+      local columns, exact = preview_columns(result.columns, kind)
       local fields = parsed.insert_columns or result.columns
       for _, tuple in ipairs(parsed.insert_values) do
         if tuple.n ~= #fields then parsed.current_state = true; break end
         local row, seen = {}, {}
         for idx, field in ipairs(fields) do
           local key = kind == "postgresql" and field or field:lower()
-          local column = columns[key]
+          local column = (exact and exact[field]) or columns[key]
           if not column or seen[column] then parsed.current_state = true; break end
           seen[column] = true
           row[column] = tuple[idx] == nil and data.NULL_SENTINEL or tuple[idx]

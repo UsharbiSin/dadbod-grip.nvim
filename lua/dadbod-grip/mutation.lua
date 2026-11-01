@@ -10,6 +10,23 @@ local clauses = {
   CROSS = true, NATURAL = true, INDEXED = true, NOT = true, PARTITION = true,
   WITH = true, USE = true, FORCE = true, IGNORE = true,
 }
+-- T-SQL generally permits adjacent statements without semicolons. These
+-- command keywords cannot appear unquoted as scalar identifiers.
+local sqlserver_commands = {
+  INSERT = true, UPDATE = true, DELETE = true, MERGE = true, TRUNCATE = true,
+  ALTER = true, CREATE = true, DROP = true, EXEC = true, EXECUTE = true,
+  DECLARE = true, BEGIN = true, COMMIT = true, ROLLBACK = true, SAVE = true,
+  USE = true, GRANT = true, DENY = true, REVOKE = true, BACKUP = true,
+  RESTORE = true, DBCC = true, CHECKPOINT = true, RECONFIGURE = true,
+  SHUTDOWN = true, KILL = true, BULK = true, IF = true, WHILE = true,
+  GOTO = true, RETURN = true, BREAK = true, CONTINUE = true, WAITFOR = true,
+  PRINT = true, RAISERROR = true, OPEN = true, CLOSE = true, DEALLOCATE = true,
+  SETUSER = true, READTEXT = true, WRITETEXT = true, UPDATETEXT = true,
+  SET = "set", SELECT = "select", CASE = "case", END = "end",
+  ENABLE = "trigger", DISABLE = "trigger", GO = "batch",
+  EXIT = "client", QUIT = "client", RESET = "client", ED = "client", ON = "on_error",
+  [":"] = "directive", ["!"] = "shell",
+}
 local closes = { [")"] = "(", ["]"] = "[", ["}"] = "{" }
 local expression_prefix = {
   WHERE = true, AND = true, OR = true, NOT = true, IS = true, IN = true,
@@ -51,8 +68,71 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
   -- A single terminal semicolon is allowed. Never preview only one statement
   -- while retaining multiple statements in the SQL offered for execution.
   local depth, stack, matching, last = {}, {}, {}, #tokens
+  local sqlserver = adapter_kind == "sqlserver"
+  local sqlserver_set, sqlserver_select, case_depth = false, false, 0
   for idx, token in ipairs(tokens) do
     depth[idx] = #stack
+    if token.kind == "ident" and not token.upper then
+      -- The shared lexer tolerates several identifier quote styles. A CLI
+      -- must recognize the same boundary or hidden client commands can escape.
+      local quote = text:byte(token.start)
+      if (quote == 96 and (adapter_kind == "postgresql" or adapter_kind == "sqlserver"))
+          or (quote == 91 and adapter_kind == "mysql")
+          or (quote == 91 and adapter_kind == "sqlite" and raw(idx):find("]]", 1, true)) then return reject() end
+    end
+    -- Preview SQL is sent to CLI stdin. Bare backslashes can invoke psql/mysql
+    -- client commands; supported SQL uses them only inside quoted tokens.
+    if token.kind == "\\" then return reject() end
+    local action = sqlserver and sqlserver_commands[token.upper or token.kind]
+    if action then
+      local previous, following = tokens[idx - 1], tokens[idx + 1]
+      local line_command = (action == "directive"
+          and (not following or following.kind ~= ":" or following.start ~= token.finish + 1)
+          and (not previous or previous.kind ~= ":" or token.start ~= previous.finish + 1))
+        or (action == "shell" and following and following.kind == "!")
+      local client_token = (action == "batch" or action == "client") and token
+      if action == "on_error" and following and following.upper == "ERROR"
+          and following.start == token.finish + 2 and text:byte(token.finish + 1) == 32 then
+        client_token = following
+      end
+      if client_token then
+        -- sqlcmd matches whitespace or EOL after these words, and also '('
+        -- after EXIT. Adjacent operators keep ordinary identifiers intact.
+        local next_byte = text:byte(client_token.finish + 1)
+        line_command = not next_byte or next_byte == 9 or next_byte == 10
+          or next_byte == 13 or next_byte == 32 or (token.upper == "EXIT" and next_byte == 40)
+      end
+      -- sqlcmd commands operate at physical line starts even inside SQL
+      -- parentheses. Examine only bounded gaps between tokens; they cannot
+      -- rescan a long SQL prefix or confuse quoted text with client commands.
+      if line_command and (not previous
+          or text:sub(previous.finish + 1, token.start - 1):find("[\r\n]")) then
+        return reject()
+      end
+      if idx > 1 and #stack == 0 and previous.kind ~= "." and previous.kind ~= "@"
+          and (not following or following.kind ~= ".") then
+        if action == true
+            or (action == "trigger" and following and following.upper == "TRIGGER") then return reject() end
+        if action == "set" then
+          if stmt_type ~= "UPDATE" or sqlserver_set then return reject() end
+          sqlserver_set = true
+        elseif action == "select" then
+          local operator = previous.upper
+          if operator == "ALL" and tokens[idx - 2] then operator = tokens[idx - 2].upper end
+          if not inserting or (sqlserver_select and operator ~= "UNION"
+              and operator ~= "INTERSECT" and operator ~= "EXCEPT") then return reject() end
+          sqlserver_select = true
+        elseif action == "case" then
+          case_depth = case_depth + 1
+        elseif action == "end" then
+          if case_depth > 0 then
+            case_depth = case_depth - 1
+          elseif following and following.upper == "CONVERSATION" then
+            return reject()
+          end
+        end
+      end
+    end
     if token.kind == "(" or token.kind == "[" or token.kind == "{" then
       stack[#stack + 1] = idx
     elseif closes[token.kind] then
@@ -419,6 +499,18 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
       result.assignments, assignment_slots = {}, {}
       return
     end
+    if #fields > 1 and (adapter_kind == "postgresql" or adapter_kind == "sqlserver") then
+      -- Dotted SET targets address PostgreSQL composite fields or SQL Server
+      -- UDT properties. Do not mistake them for alias-qualified scalar columns.
+      local column = name(fields[1])
+      if adapter_kind == "sqlserver" then
+        result.assignments[#result.assignments + 1] = { column = column, known = false }
+      else
+        local slot = assignment_slots[column]
+        if slot then result.assignments[slot] = { column = column, known = false } end
+      end
+      return
+    end
     if #fields > 1 then
       local qualifiers = alias and { alias } or target
       local matches = #fields - 1 == #qualifiers
@@ -432,7 +524,10 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
     end
     local column = name(fields[#fields])
     local key = adapter_kind == "postgresql" and column or column:lower()
-    local slot = assignment_slots[key] or (#result.assignments + 1)
+    -- SQL Server column case depends on the catalog collation. Preserve the
+    -- original order until preview metadata resolves each actual column.
+    local slot = adapter_kind == "sqlserver" and (#result.assignments + 1)
+      or assignment_slots[key] or (#result.assignments + 1)
     assignment_slots[key] = slot
     local known, value = literal(next_pos + 1, finish)
     -- A later assignment wins, including one whose value cannot be predicted.
@@ -453,6 +548,10 @@ function M.parse(text, tokens, adapter_kind, stmt_type)
     for _, entry in ipairs(result.assignments) do
       if entry.known then
         entry.known = nil
+        literals[#literals + 1] = entry
+      elseif adapter_kind == "sqlserver" then
+        -- A later expression can invalidate an earlier differently-cased
+        -- literal on a case-insensitive SQL Server database.
         literals[#literals + 1] = entry
       end
     end

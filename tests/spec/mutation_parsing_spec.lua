@@ -359,6 +359,65 @@ for _, case in ipairs({
   end)
 end
 
+for _, case in ipairs({
+  { sql = "UPDATE items SET items.value='composite' WHERE id=2", expected = {} },
+  {
+    sql = "UPDATE items SET value='scalar', items.value='composite' WHERE id=2",
+    expected = { { column = "value", value = "scalar" } },
+  },
+  {
+    sql = "UPDATE items AS i SET value='scalar', i.value='composite' WHERE id=2",
+    expected = { { column = "value", value = "scalar" } },
+  },
+  {
+    sql = 'UPDATE items AS "I" SET value=\'scalar\', "I".nested.value=\'composite\' WHERE id=2',
+    expected = { { column = "value", value = "scalar" } },
+  },
+}) do
+  test("PostgreSQL composite SET targets are not alias-qualified scalars: " .. case.sql, function()
+    local tokens = require("dadbod-grip.sql_tokens").tokenize(case.sql, "postgresql", true)
+    local parsed = assert(require("dadbod-grip.mutation").parse(case.sql, tokens, "postgresql", "UPDATE"))
+    eq(parsed.assignments, case.expected, "composite updates must not stage a same-named scalar field")
+  end)
+end
+
+for _, case in ipairs({
+  {
+    set = "items.value='property'",
+    expected = { { column = "items", known = false } },
+  },
+  {
+    set = "value='scalar', items.value='property'",
+    expected = { { column = "value", value = "scalar" }, { column = "items", known = false } },
+  },
+  {
+    set = "items='initial', items.value='property'",
+    expected = { { column = "items", value = "initial" }, { column = "items", known = false } },
+  },
+  {
+    set = "Value=1, value=2, Value=3",
+    expected = {
+      { column = "Value", value = "1" }, { column = "value", value = "2" },
+      { column = "Value", value = "3" },
+    },
+  },
+  {
+    set = "Value='literal', value=UPPER(value)",
+    expected = { { column = "Value", value = "literal" }, { column = "value", known = false } },
+  },
+  {
+    set = "value=UPPER(value), Value='literal'",
+    expected = { { column = "value", known = false }, { column = "Value", value = "literal" } },
+  },
+}) do
+  test("SQL Server assignment order survives until metadata resolution: " .. case.set, function()
+    local sql = "UPDATE items SET " .. case.set .. " WHERE id=2"
+    local tokens = require("dadbod-grip.sql_tokens").tokenize(sql, "sqlserver", true)
+    local parsed = assert(require("dadbod-grip.mutation").parse(sql, tokens, "sqlserver", "UPDATE"))
+    eq(parsed.assignments, case.expected, "preserve exact columns and unknown assignments in order")
+  end)
+end
+
 test("PostgreSQL subscripts invalidate earlier scalar predictions", function()
   local sql = "UPDATE items SET value='fake', value[1]='actual' WHERE id=2"
   local tokens = require("dadbod-grip.sql_tokens").tokenize(sql, "postgresql", true)

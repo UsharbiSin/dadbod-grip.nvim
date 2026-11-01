@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Server writes with omitted INTO/FROM or table-variable targets require
   confirmation instead of being misrouted as SELECT queries.
   UPDATE staging preserves NULL versus empty strings and the last assignment.
+  PostgreSQL composite and SQL Server UDT property targets no longer overwrite
+  unrelated scalar predictions. SQL Server column mapping preserves exact case
+  and only uses case-insensitive fallback when the catalog match is unique.
   INSERT preserves column order and positional NULLs; SQLite/DuckDB INSERT OR
   forms, DuckDB BY NAME/POSITION and FROM-first queries, parenthesized source
   queries, and MySQL VALUE, SET, empty default lists, and row/column aliases
@@ -26,14 +29,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Confirmation executes the original SQL once; completed writes report the
   adapter's affected count. Unsupported or multiple-statement previews fail
   without writing. Committed transaction previews retain their complete SQL;
-  rollback blocks cannot be stripped into committed mutations.
+  rollback blocks cannot be stripped into committed mutations. SQL Server
+  statements appended without semicolons and CLI command escapes are rejected
+  before a preview can issue a database request.
 - Alias completion recognizes mutation targets and MySQL inserted-row aliases,
   including column renames, while ignoring strings and comments. The alias
   cache is shared by completion providers and follows connection changes.
   SQLite UPDATE OR modifiers and MySQL/MariaDB priority and PARTITION clauses
   no longer hide target aliases; SQL Server clause keywords are not aliases.
+  Keyword-shaped variables do not create false aliases, and SQLite/DuckDB
+  completion resolves quoted aliases and table names case-insensitively.
+  Repeated REPLACE column names no longer cause quadratic completion scans.
+- CTE DELETE modifiers and MERGE statements retain whole-statement confirmation;
+  keyword-shaped variables and SELECT FOR UPDATE locks remain query expressions.
+  MERGE uses confirmation rather than a predicted row preview.
 - MySQL/MariaDB default-row compatibility rewriting preserves DEFAULT VALUES
-  inside strings, quoted identifiers, and comments.
+  inside strings, quoted identifiers, and comments, including batches whose
+  SET or dynamic EXECUTE statements may change string parsing.
 - Build mutation preview staging in one pass instead of repeatedly copying
   prior changes. Shared SQL tokenization scans words, strings, and comments
   in chunks while preserving the existing SELECT editability checks.
