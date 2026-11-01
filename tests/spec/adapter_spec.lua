@@ -678,6 +678,33 @@ for _, scheme in ipairs({ "mysql", "mariadb" }) do
     [[EXECUTE IMMEDIATE 'SET sql_mode = ''''';
       UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
     [[INSERT INTO t DEFAULT VALUES; EXECUTE mode]],
+    -- Client reconnects restore the server's default quote mode; scripts and
+    -- delimiter changes can also invalidate the normalization token stream.
+    [[resetconnection;
+UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[connect;
+UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[source fixture.sql;
+UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[delimiter $$
+UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[INSERT INTO t DEFAULT VALUES;
+RESETCONNECTION;
+SELECT 1]],
+    [[INSERT INTO t DEFAULT VALUES;
+CONNECT;
+SELECT 1]],
+    [[INSERT INTO t DEFAULT VALUES;
+SOURCE fixture.sql;
+SELECT 1]],
+    [[INSERT INTO t DEFAULT VALUES;
+DELIMITER $$]],
+    [[\x
+UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[INSERT INTO t DEFAULT VALUES;
+\r]],
+    [[/*+ \x */ UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[INSERT INTO t DEFAULT VALUES; /*+ \x */ SELECT 1]],
     "SELECT DEFAULT VALUES",
   }) do
     test(scheme .. " execute: preserve non-clause text: " .. statement, function()
@@ -694,11 +721,11 @@ for _, scheme in ipairs({ "mysql", "mariadb" }) do
   test(scheme .. " execute: convert only generated default inserts in a batch", function()
     local statement = 'INSERT INTO "my db"."my table" DEFAULT VALUES;\n'
       .. "UPDATE t SET name='DEFAULT VALUES';\n"
-      .. "/* DEFAULT VALUES */ INSERT INTO t DEFAULT VALUES;\n"
+      .. "/* DEFAULT VALUES \\x */ INSERT INTO t DEFAULT VALUES;\n"
       .. "REPLACE INTO t DEFAULT VALUES; -- DEFAULT VALUES"
     local expected = 'INSERT INTO "my db"."my table" () VALUES ();\n'
       .. "UPDATE t SET name='DEFAULT VALUES';\n"
-      .. "/* DEFAULT VALUES */ INSERT INTO t () VALUES ();\n"
+      .. "/* DEFAULT VALUES \\x */ INSERT INTO t () VALUES ();\n"
       .. "REPLACE INTO t () VALUES (); -- DEFAULT VALUES"
     with_executable(function()
       local _, opts, calls = capture_system_call("ROW_COUNT()\n1\n", function()

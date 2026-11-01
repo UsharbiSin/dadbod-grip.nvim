@@ -537,6 +537,9 @@ local function normalize_default_values(sql_str)
   local chunks, copied, first, depth = {}, 1, 1, 0
   for finish = 1, #tokens + 1 do
     local token = tokens[finish]
+    -- Client commands can reconnect, load another script, or change lexical
+    -- boundaries without a SET statement. Never rewrite such a batch.
+    if token and token.kind == "\\" then return sql_str end
     if token and token.kind == "(" then
       depth = depth + 1
     elseif token and token.kind == ")" then
@@ -547,9 +550,10 @@ local function normalize_default_values(sql_str)
       if depth ~= 0 then return sql_str end
       local pos = first
       local verb = tokens[pos] and tokens[pos].upper
-      -- SET or dynamic EXECUTE may change sql_mode after mysql_stdin's setup,
-      -- making later string boundaries uncertain. Grid batches need neither.
-      if verb == "SET" or verb == "EXECUTE" then return sql_str end
+      -- Session changes and client directives can invalidate mysql_stdin's
+      -- quote mode or the statement boundaries. Grid batches need none.
+      if verb == "SET" or verb == "EXECUTE" or verb == "CONNECT"
+          or verb == "RESETCONNECTION" or verb == "SOURCE" or verb == "DELIMITER" then return sql_str end
       if verb == "INSERT" or verb == "REPLACE" then
         pos = pos + 1
         while tokens[pos] and (tokens[pos].upper == "LOW_PRIORITY"
