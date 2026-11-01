@@ -547,9 +547,9 @@ local function normalize_default_values(sql_str)
       if depth ~= 0 then return sql_str end
       local pos = first
       local verb = tokens[pos] and tokens[pos].upper
-      -- A caller's SET may change sql_mode after mysql_stdin's setup, making
-      -- later string boundaries uncertain. Grid-generated batches need no SET.
-      if verb == "SET" then return sql_str end
+      -- SET or dynamic EXECUTE may change sql_mode after mysql_stdin's setup,
+      -- making later string boundaries uncertain. Grid batches need neither.
+      if verb == "SET" or verb == "EXECUTE" then return sql_str end
       if verb == "INSERT" or verb == "REPLACE" then
         pos = pos + 1
         while tokens[pos] and (tokens[pos].upper == "LOW_PRIORITY"

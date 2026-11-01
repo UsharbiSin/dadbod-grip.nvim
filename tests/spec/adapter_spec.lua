@@ -673,6 +673,11 @@ for _, scheme in ipairs({ "mysql", "mariadb" }) do
     "INSERT /*M! IGNORE */ INTO t DEFAULT VALUES",
     [[SET sql_mode=''; UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
     "INSERT INTO t DEFAULT VALUES; SET @value='DEFAULT VALUES'",
+    [[PREPARE mode FROM 'SET sql_mode = '''''; EXECUTE mode;
+      UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[EXECUTE IMMEDIATE 'SET sql_mode = ''''';
+      UPDATE t SET name='a\'; INSERT INTO t DEFAULT VALUES;-- ']],
+    [[INSERT INTO t DEFAULT VALUES; EXECUTE mode]],
     "SELECT DEFAULT VALUES",
   }) do
     test(scheme .. " execute: preserve non-clause text: " .. statement, function()
