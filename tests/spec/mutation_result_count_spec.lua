@@ -40,6 +40,39 @@ for _, unavailable in ipairs({ false, true }) do
   end)
 end
 
+for _, statement in ipairs({
+  "UPDATE items SET value=value+1 WHERE id=7; -- trailing",
+  "UPDATE items SET value=value+1 WHERE id=7 RETURNING id -- trailing",
+}) do
+  test("SQLite Apply reports the actual count after a line comment: " .. statement, function(maps, session)
+    local sqlite = require("dadbod-grip.adapters.sqlite")
+    local path = vim.fn.tempname() .. ".db"
+    local setup = vim.system({ "sqlite3", path,
+      "CREATE TABLE items(id INTEGER PRIMARY KEY, value INTEGER); INSERT INTO items VALUES(7,1);"
+    }, { text = true }):wait()
+    assert(setup.code == 0, setup.stderr)
+    local ok, err = pcall(function()
+      session.url = "sqlite:" .. path
+      session.pending_mutation.sql = statement
+      session.pending_mutation.type = "UPDATE"
+      local message, executions = nil, 0
+      vim.notify = function(text) message = text end
+      db.execute = function(...)
+        executions = executions + 1
+        return original.execute(...)
+      end
+      maps.grid_apply()
+      assert(executions == 1, "Apply must execute the mutation once")
+      assert(message and message:find("1 row affected", 1, true), message or "missing execution message")
+      assert(session.pending_mutation == nil, "successful Apply must consume pending SQL")
+      local rows = assert(sqlite.query("SELECT value FROM items WHERE id=7", session.url))
+      assert(rows.rows[1][1] == "2", "the mutation must commit exactly once")
+    end)
+    vim.fn.delete(path)
+    assert(ok, err)
+  end)
+end
+
 db.execute, grip.open, history.record = original.execute, original.open, original.record
 vim.fn.confirm, vim.notify = original.confirm, original.notify
 print(string.format("\nmutation_result_count_spec: %d passed, %d failed", pass, fail))

@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Confirmation executes the original SQL once; completed writes report the
   adapter's affected count when available. MySQL/MariaDB transaction counts
   are omitted when COMMIT prevents determining the mutation count.
+  SQLite trailing line comments cannot hide the affected-count query or cause
+  RETURNING values to be mistaken for affected counts.
   Unsupported or multiple-statement previews fail without writing.
   Committed transaction previews retain their complete SQL;
   rollback blocks cannot be stripped into committed mutations. SQL Server
