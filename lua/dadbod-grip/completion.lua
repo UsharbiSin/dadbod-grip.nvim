@@ -15,6 +15,27 @@ local CACHE_TTL = 300  -- 5 minutes
 -- _cache[url] = { tables = { name -> [{column_name, data_type, is_nullable}] }, time }
 local _cache = {}
 
+local function cache_schema(url, tables, now)
+  local kind = require("dadbod-grip.adapters").kind(require("dadbod-grip.db").resolved_url(url))
+  _cache[url] = {
+    tables = tables, time = now, kind = kind, fold_case = kind == "sqlite" or kind == "duckdb",
+  }
+end
+
+-- Fold only engines whose quoted identifiers are case-insensitive. Build each
+-- name index lazily once per immutable schema/alias map; old maps can be collected.
+local _folded_names = setmetatable({}, { __mode = "k" })
+local function folded_lookup(names, key)
+  if names[key] ~= nil then return names[key] end
+  local index = _folded_names[names]
+  if not index then
+    index = {}
+    for name in pairs(names) do index[name:lower()] = name end
+    _folded_names[names] = index
+  end
+  return names[index[key:lower()]]
+end
+
 -- ── Schema fetching ────────────────────────────────────────────────────────────
 
 --- Fetch and cache schema for a database URL.
@@ -48,7 +69,7 @@ function M.get_schema(url)
     end
   end
 
-  _cache[url] = { tables = tables, time = now }
+  cache_schema(url, tables, now)
   return tables
 end
 
@@ -77,7 +98,7 @@ function M.warm_schema(url)
   if not db.get_schema_batch_async then return end
   db.get_schema_batch_async(url, function(schema)
     if schema then
-      _cache[url] = { tables = schema, time = os.time() }
+      cache_schema(url, schema, os.time())
     end
   end)
 end
@@ -186,19 +207,20 @@ local function insert_aliases(tokens, aliases, explicit, pos)
   end
   local source_columns
   source_columns, pos = column_list(tokens, pos)
-  -- Row aliases belong to VALUES/SET, never to SELECT expressions or UPSERT
-  -- assignments. Parentheses keep functions and nested queries out of this scan.
-  local depth, data_clause = 0, nil
-  for idx = pos, #tokens do
+  -- Row aliases belong to a VALUES/SET body immediately after the target.
+  -- Do not search arbitrary suffixes: REPLACE may instead be a SELECT column,
+  -- and rescanning every such occurrence makes large projection lists quadratic.
+  local data_clause = tokens[pos] and tokens[pos].upper
+  if data_clause ~= "VALUES" and data_clause ~= "VALUE" and data_clause ~= "SET" then return end
+  local depth = 0
+  for idx = pos + 1, #tokens do
     local token = tokens[idx]
     if token.kind == ";" then break end
     if token.kind == "(" then depth = depth + 1
     elseif token.kind == ")" then depth = depth - 1
     elseif depth == 0 then
       if token.upper == "SELECT" or token.upper == "ON" or token.upper == "RETURNING" then break end
-      if not data_clause and (token.upper == "VALUES" or token.upper == "VALUE" or token.upper == "SET") then
-        data_clause = token.upper
-      elseif data_clause == "SET" and token.kind == "ident"
+      if data_clause == "SET" and token.kind == "ident"
           and tokens[idx + 1] and tokens[idx + 1].kind == "="
           and (tokens[idx - 1].upper == "SET" or tokens[idx - 1].kind == ",") then
         source_columns = source_columns or {}
@@ -227,7 +249,10 @@ function M.extract_aliases(sql_text, adapter_kind)
   local closing_parens
   for idx, token in ipairs(tokens) do
     local previous = tokens[idx - 1]
-    if not previous or previous.kind ~= "." then
+    if (not previous or previous.kind ~= ".")
+        and not (previous and ((previous.kind == "@"
+          and (adapter_kind == "mysql" or adapter_kind == "sqlserver" or adapter_kind == "sqlite"))
+          or (previous.kind == ":" and adapter_kind == "sqlite"))) then
       local keyword = token.upper
       local update_target = keyword == "UPDATE"
         and not (previous and (previous.upper == "DO" or previous.upper == "KEY"))
@@ -451,6 +476,8 @@ function M.complete(before, url, aliases)
   end
 
   local schema = M.get_schema(url)
+  local cached_schema = _cache[url]
+  local fold_case = cached_schema and cached_schema.fold_case
   local items = {}
 
   if ctx.type == "table" then
@@ -485,10 +512,13 @@ function M.complete(before, url, aliases)
 
   elseif ctx.type == "dotted" then
     local q = ctx.qualifier
+    if cached_schema and cached_schema.kind == "postgresql" and not ctx.quoted then q = q:lower() end
     -- Check if qualifier is a known table alias resolving to a local table
-    local resolved = aliases[q] or (not ctx.quoted and aliases[q:lower()]) or q
+    local resolved = (fold_case and folded_lookup(aliases, q))
+      or aliases[q] or (not ctx.quoted and aliases[q:lower()]) or q
     local row_alias = type(resolved) == "table" and resolved or nil
-    local cols = schema[row_alias and row_alias.table_name or resolved]
+    local table_name = row_alias and row_alias.table_name or resolved
+    local cols = schema[table_name] or (fold_case and folded_lookup(schema, table_name))
     if cols then
       if row_alias then
         -- Column aliases rename the inserted values in their declared order.

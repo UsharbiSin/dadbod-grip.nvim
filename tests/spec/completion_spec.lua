@@ -1070,6 +1070,113 @@ do
   restore()
 end
 
+-- Keyword-shaped variables cannot introduce source aliases. In particular,
+-- a fake alias would hide completion for a real table with the same name.
+for _, kind in ipairs({ "mysql", "sqlserver" }) do
+  for _, variable in ipairs({ "update", "from", "join" }) do
+    local sql_text = "SELECT @" .. variable .. " AS items, items.id FROM items"
+    eq(next(ea(sql_text, kind)), nil, kind .. " variable is not a source: " .. variable)
+  end
+end
+
+do
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+  } })
+  for _, kind in ipairs({ "mysql", "sqlserver" }) do
+    local url = kind .. "://localhost/completion_variables"
+    completion.invalidate(url)
+    local text = "SELECT @update AS items, items.id FROM items"
+    local names = {}
+    for _, entry in ipairs(completion.complete("SELECT items.", url, ea(text, kind))) do
+      names[entry.word] = true
+    end
+    ok(names.id, kind .. " variable cannot shadow completion for the real table")
+  end
+  restore()
+end
+
+-- SQLite named parameters use either @ or :, including keyword-shaped names.
+do
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+  } })
+  completion.invalidate(SQLITE_URL)
+  for _, prefix in ipairs({ "@", ":" }) do
+    for _, parameter in ipairs({ "update", "from", "join" }) do
+      local text = "SELECT " .. prefix .. parameter .. " AS items, items.id FROM items"
+      eq(next(ea(text, "sqlite")), nil, "SQLite parameter is not a source: " .. prefix .. parameter)
+    end
+    local text = "SELECT " .. prefix .. "update AS items, items.id FROM items"
+    local names = {}
+    for _, entry in ipairs(completion.complete("SELECT items.", SQLITE_URL, ea(text, "sqlite"))) do
+      names[entry.word] = true
+    end
+    ok(names.id, "SQLite " .. prefix .. "parameter preserves real-table column completion")
+  end
+  restore()
+end
+
+-- REPLACE is also a valid SQLite column/table name. Large SELECT lists must
+-- not repeatedly search the remaining query for an INSERT data clause.
+for _, naming in ipairs({ "replace AS c", "replace c" }) do
+  local fields = {}
+  for idx = 1, 1600 do fields[idx] = naming .. idx end
+  local aliases = ea("SELECT " .. table.concat(fields, ", ") .. " FROM items AS i", "sqlite")
+  eq(aliases.i, "items", "keyword-shaped SELECT columns preserve source alias")
+  local count = 0
+  for _ in pairs(aliases) do count = count + 1 end
+  eq(count, 1, "keyword-shaped SELECT columns do not introduce mutation aliases")
+end
+eq(ea("REPLACE INTO items(id) VALUES(1); SELECT i.id FROM items AS i", "sqlite").i,
+  "items", "REPLACE statement preserves following query aliases")
+eq(ea("SELECT r.id FROM replace AS r", "sqlite").r, "replace",
+  "keyword-shaped source table preserves its alias")
+
+-- SQLite and DuckDB fold even quoted identifiers; PostgreSQL must continue
+-- distinguishing them. Keep stored/displayed schema names in their original case.
+do
+  local restore = mock_db({
+    MixedItems = { { column_name = "id", data_type = "integer" } },
+    items = { { column_name = "lower_id", data_type = "integer" } },
+    Items = { { column_name = "upper_id", data_type = "integer" } },
+  })
+  for _, case in ipairs({ { "sqlite", SQLITE_URL }, { "duckdb", DUCK_URL } }) do
+    local kind, url = case[1], case[2]
+    completion.invalidate(url)
+    for _, target in ipairs({ "mixeditems", '"MixedItems"' }) do
+      local aliases = ea("UPDATE " .. target .. ' AS "MiX" SET id=1', kind)
+      for _, qualifier in ipairs({ "mix", "MIX", '"mIx"', '"MiX"' }) do
+        local result = completion.complete("WHERE " .. qualifier .. ".", url, aliases)
+        eq(result[1] and result[1].word, "id", kind .. " folds alias and source: " .. qualifier)
+      end
+    end
+    -- Repeated completion reuses schema and folded-name indexes.
+    local aliases = ea('UPDATE "MixedItems" AS "MiX" SET id=1', kind)
+    for _ = 1, 2 do
+      eq(completion.complete('WHERE "mix".', url, aliases)[1].word, "id",
+        kind .. " repeated folded lookup")
+    end
+  end
+  completion.invalidate(PG_URL)
+  local aliases = ea('SELECT * FROM "Items" AS "I" JOIN items AS i ON true', "postgresql")
+  eq(completion.complete('SELECT "I".', PG_URL, aliases)[1].word, "upper_id",
+    "PostgreSQL quoted uppercase alias retains distinct target")
+  eq(completion.complete("SELECT i.", PG_URL, aliases)[1].word, "lower_id",
+    "PostgreSQL unquoted lowercase alias retains distinct target")
+  eq(completion.complete("SELECT I.", PG_URL, aliases)[1].word, "lower_id",
+    "PostgreSQL unquoted uppercase reference folds before alias lookup")
+  eq(#completion.complete('SELECT "MiX".', PG_URL, ea("SELECT * FROM items AS mix", "postgresql")), 0,
+    "PostgreSQL quoted qualifier does not fold to unquoted alias")
+  for _, kind in ipairs({ "mysql", "sqlserver" }) do
+    local url = kind .. "://localhost/completion_case"
+    completion.invalidate(url)
+    eq(#completion.complete('SELECT "mix".', url, ea('SELECT * FROM "MixedItems" AS "MiX"', kind)), 0,
+      kind .. " does not assume a case-insensitive collation")
+  end
+  restore()
+end
+
 -- ── summary ───────────────────────────────────────────────────────────────────
 print(string.format("\ncompletion_spec: %d passed, %d failed", pass, fail))
 if fail > 0 then os.exit(1) end
