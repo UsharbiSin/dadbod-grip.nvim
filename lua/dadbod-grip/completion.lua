@@ -15,6 +15,27 @@ local CACHE_TTL = 300  -- 5 minutes
 -- _cache[url] = { tables = { name -> [{column_name, data_type, is_nullable}] }, time }
 local _cache = {}
 
+local function cache_schema(url, tables, now)
+  local kind = require("dadbod-grip.adapters").kind(require("dadbod-grip.db").resolved_url(url))
+  _cache[url] = {
+    tables = tables, time = now, kind = kind, fold_case = kind == "sqlite" or kind == "duckdb",
+  }
+end
+
+-- Fold only engines whose quoted identifiers are case-insensitive. Build each
+-- name index lazily once per immutable schema/alias map; old maps can be collected.
+local _folded_names = setmetatable({}, { __mode = "k" })
+local function folded_lookup(names, key)
+  if names[key] ~= nil then return names[key] end
+  local index = _folded_names[names]
+  if not index then
+    index = {}
+    for name in pairs(names) do index[name:lower()] = name end
+    _folded_names[names] = index
+  end
+  return names[index[key:lower()]]
+end
+
 -- ── Schema fetching ────────────────────────────────────────────────────────────
 
 --- Fetch and cache schema for a database URL.
@@ -48,13 +69,16 @@ function M.get_schema(url)
     end
   end
 
-  _cache[url] = { tables = tables, time = now }
+  cache_schema(url, tables, now)
   return tables
 end
 
 --- Invalidate the cache for a given URL (call on connection switch or GripAttach/Detach).
 function M.invalidate(url)
   _cache[url] = nil
+  for bufnr, cached in pairs(M._alias_cache or {}) do
+    if cached.url == url then M._alias_cache[bufnr] = nil end
+  end
   -- Also invalidate any federated entries keyed as "url::alias"
   local prefix = url .. "::"
   for k in pairs(_cache) do
@@ -74,77 +98,211 @@ function M.warm_schema(url)
   if not db.get_schema_batch_async then return end
   db.get_schema_batch_async(url, function(schema)
     if schema then
-      _cache[url] = { tables = schema, time = os.time() }
+      cache_schema(url, schema, os.time())
     end
   end)
 end
 
 -- ── Alias extraction ───────────────────────────────────────────────────────────
 
--- SQL keywords that cannot be table aliases.
+-- SQL keywords that cannot be unquoted table names or aliases here.
 local _ALIAS_KEYWORDS = {
   WHERE=1, ON=1, SET=1, INNER=1, LEFT=1, RIGHT=1, FULL=1, OUTER=1, CROSS=1,
   HAVING=1, GROUP=1, ORDER=1, LIMIT=1, OFFSET=1, UNION=1, INTERSECT=1,
   EXCEPT=1, INTO=1, AS=1, AND=1, OR=1, NOT=1, NULL=1, IS=1, IN=1,
   LIKE=1, BETWEEN=1, WHEN=1, THEN=1, ELSE=1, END=1, CASE=1, WITH=1,
-  SELECT=1, FROM=1, JOIN=1, BY=1,
+  SELECT=1, FROM=1, JOIN=1, BY=1, VALUES=1, RETURNING=1,
+  INSERT=1, REPLACE=1, UPDATE=1, DELETE=1, DEFAULT=1, DO=1, USING=1,
 }
+local insert_modifiers = {
+  LOW_PRIORITY=1, DELAYED=1, HIGH_PRIORITY=1, IGNORE=1,
+}
+local update_modifiers = { LOW_PRIORITY=1, IGNORE=1 }
+local sqlite_conflicts = { ROLLBACK=1, ABORT=1, FAIL=1, IGNORE=1, REPLACE=1 }
 
---- Parse a SQL string and return a map of alias → table_name.
---- Recognises FROM/JOIN with optional AS keyword.
---- Aliases that match SQL keywords are skipped.
---- Returns { ["e"] = "employees", ["d"] = "departments", ... } (lowercase keys/values).
-function M.extract_aliases(sql)
-  if not sql or sql == "" then return {} end
-  local up  = sql:upper()
-  local aliases = {}
-
-  -- Strip quotes from table name (handles "table", `table`, 'table').
-  -- Use long-bracket literal to avoid Lua escape issues with backtick.
-  local function strip_quotes(s)
-    return (s:gsub([=[^["'`](.*)["'`]$]=], "%1"))
+local function identifier(token)
+  return token and token.kind == "ident" and not _ALIAS_KEYWORDS[token.upper]
+end
+local function alias_name(token)
+  if token.upper then return token.text:lower() end
+  return token.text
+end
+local function source_identifier(token, adapter_kind)
+  -- SQLite permits single quotes only where a table identifier is expected.
+  -- Other literal tokens (numbers and parameters) have no text to use here.
+  return token and (token.kind == "ident"
+    or (adapter_kind == "sqlite" and token.kind == "literal" and token.text ~= nil))
+end
+local function alias_source(tokens, pos, adapter_kind)
+  if not source_identifier(tokens[pos], adapter_kind) then return nil, pos end
+  local names = { alias_name(tokens[pos]) }
+  pos = pos + 1
+  while tokens[pos] and tokens[pos].kind == "." do
+    if not source_identifier(tokens[pos + 1], adapter_kind) then return nil, pos end
+    names[#names + 1] = alias_name(tokens[pos + 1])
+    pos = pos + 2
   end
-
-  -- Pattern A/C: FROM/JOIN table AS alias
-  for tbl, alias in up:gmatch("[%u][%u]*%s+([%w_%.\"'`]+)%s+AS%s+([%w_]+)") do
-    local a_up = alias:upper()
-    if not _ALIAS_KEYWORDS[a_up] then
-      aliases[alias:lower()] = strip_quotes(tbl):lower()
+  return table.concat(names, "."), pos
+end
+local function add_alias(aliases, explicit, token, target, is_explicit)
+  if not identifier(token) then return end
+  local key = alias_name(token)
+  if is_explicit or not explicit[key] then
+    aliases[key], explicit[key] = target, is_explicit
+  end
+end
+local function target_alias(tokens, aliases, explicit, target, pos, bare)
+  local is_explicit = tokens[pos] and tokens[pos].upper == "AS"
+  if is_explicit then pos = pos + 1 end
+  if (is_explicit or bare) and identifier(tokens[pos]) then
+    add_alias(aliases, explicit, tokens[pos], target, is_explicit)
+    return pos + 1
+  end
+  return pos
+end
+local function column_list(tokens, pos)
+  if not tokens[pos] or tokens[pos].kind ~= "(" then return nil, pos end
+  local columns, at = {}, pos + 1
+  while tokens[at] and tokens[at].kind == "ident" do
+    columns[#columns + 1] = alias_name(tokens[at])
+    at = at + 1
+    if tokens[at] and tokens[at].kind == ")" then return columns, at + 1 end
+    if not tokens[at] or tokens[at].kind ~= "," then break end
+    at = at + 1
+  end
+  return nil, pos
+end
+-- SQL Server's first DELETE FROM names the target, where OUTPUT/OPTION
+-- are clauses. Later FROM sources still allow ordinary aliases such as output.
+local function delete_from_target(tokens, from_pos, matching)
+  local pos = from_pos - 1
+  if tokens[pos] and tokens[pos].upper == "PERCENT" then pos = pos - 1 end
+  if tokens[pos] and tokens[pos].kind == ")" then
+    -- Build this map only for an ambiguous SQL Server source. Repeated nested
+    -- SELECT aliases named OUTPUT must not rescan the same parentheses.
+    if not matching then
+      matching = {}
+      local stack = {}
+      for idx, token in ipairs(tokens) do
+        if token.kind == "(" then stack[#stack + 1] = idx
+        elseif token.kind == ")" and #stack > 0 then
+          matching[idx], stack[#stack] = stack[#stack], nil
+        end
+      end
     end
+    local opening = matching[pos]
+    pos = opening and opening - 1 or 0
+    if not tokens[pos] or tokens[pos].upper ~= "TOP" then return false, matching end
+    pos = pos - 1
   end
+  return tokens[pos] and tokens[pos].upper == "DELETE", matching
+end
 
-  -- Pattern B/D: FROM/JOIN table alias (no AS)
-  -- Match FROM or JOIN specifically to avoid false hits inside SELECT lists
-  for _, tbl, alias in up:gmatch("(FROM%s+)([%w_%.\"'`]+)%s+([%w_]+)") do
-    local a_up = alias:upper()
-    if not _ALIAS_KEYWORDS[a_up] then
-      local key = alias:lower()
-      if not aliases[key] then   -- AS-form wins if already set
-        aliases[key] = strip_quotes(tbl):lower()
+local function insert_aliases(tokens, aliases, explicit, pos, adapter_kind)
+  if tokens[pos] and tokens[pos].upper == "OR" then pos = pos + 2 end
+  while tokens[pos] and insert_modifiers[tokens[pos].upper] do pos = pos + 1 end
+  if tokens[pos] and tokens[pos].upper == "INTO" then pos = pos + 1 end
+  local target
+  target, pos = alias_source(tokens, pos, adapter_kind)
+  if not target then return end
+  pos = target_alias(tokens, aliases, explicit, target, pos, false)
+  if tokens[pos] and tokens[pos].upper == "PARTITION" then
+    local partitions, after = column_list(tokens, pos + 1)
+    if not partitions then return end
+    pos = after
+  end
+  local source_columns
+  source_columns, pos = column_list(tokens, pos)
+  -- Row aliases belong to a VALUES/SET body immediately after the target.
+  -- Do not search arbitrary suffixes: REPLACE may instead be a SELECT column,
+  -- and rescanning every such occurrence makes large projection lists quadratic.
+  local data_clause = tokens[pos] and tokens[pos].upper
+  if data_clause ~= "VALUES" and data_clause ~= "VALUE" and data_clause ~= "SET" then return end
+  local depth = 0
+  for idx = pos + 1, #tokens do
+    local token = tokens[idx]
+    if token.kind == ";" then break end
+    if token.kind == "(" then depth = depth + 1
+    elseif token.kind == ")" then depth = depth - 1
+    elseif depth == 0 then
+      if token.upper == "SELECT" or token.upper == "ON" or token.upper == "RETURNING" then break end
+      if data_clause == "SET" and token.kind == "ident"
+          and tokens[idx + 1] and tokens[idx + 1].kind == "="
+          and (tokens[idx - 1].upper == "SET" or tokens[idx - 1].kind == ",") then
+        source_columns = source_columns or {}
+        source_columns[#source_columns + 1] = alias_name(token)
+      elseif data_clause and token.upper == "AS" and identifier(tokens[idx + 1]) then
+        local columns = column_list(tokens, idx + 2)
+        if tokens[idx + 2] and tokens[idx + 2].kind == "(" and not columns then break end
+        local value = columns and {
+          table_name = target, columns = columns, source_columns = source_columns,
+        } or target
+        add_alias(aliases, explicit, tokens[idx + 1], value, true)
+        break
       end
     end
   end
-  for _, tbl, alias in up:gmatch("(JOIN%s+)([%w_%.\"'`]+)%s+([%w_]+)") do
-    local a_up = alias:upper()
-    if not _ALIAS_KEYWORDS[a_up] then
-      local key = alias:lower()
-      if not aliases[key] then
-        aliases[key] = strip_quotes(tbl):lower()
+end
+
+--- Return alias -> table mappings, ignoring SQL in strings and comments.
+--- MySQL row aliases with explicit column aliases carry table_name, columns,
+--- and source_columns instead of a string so completion can retain the renames.
+function M.extract_aliases(sql_text, adapter_kind)
+  if not sql_text or sql_text == "" then return {} end
+  local tokens = require("dadbod-grip.sql_tokens").tokenize(sql_text, adapter_kind, "completion", true)
+  if not tokens then return {} end
+  local aliases, explicit = {}, {}
+  local closing_parens
+  for idx, token in ipairs(tokens) do
+    local previous = tokens[idx - 1]
+    if (not previous or previous.kind ~= ".")
+        and not (previous and ((previous.kind == "@"
+          and (adapter_kind == "mysql" or adapter_kind == "sqlserver" or adapter_kind == "sqlite"))
+          or (previous.kind == ":" and adapter_kind == "sqlite"))) then
+      local keyword = token.upper
+      local update_target = keyword == "UPDATE"
+        and not (previous and (previous.upper == "DO" or previous.upper == "KEY"))
+        and not (tokens[idx + 1] and tokens[idx + 1].upper == "SET")
+      if keyword == "FROM" or keyword == "JOIN" or update_target then
+        local source_pos = idx + 1
+        if adapter_kind == "postgresql" and tokens[source_pos] and tokens[source_pos].upper == "ONLY" then
+          source_pos = source_pos + 1
+        elseif update_target and adapter_kind == "sqlite"
+            and tokens[source_pos] and tokens[source_pos].upper == "OR" then
+          local action = tokens[source_pos + 1]
+          source_pos = action and sqlite_conflicts[action.upper] and source_pos + 2 or #tokens + 1
+        elseif update_target and adapter_kind == "mysql" then
+          while tokens[source_pos] and update_modifiers[tokens[source_pos].upper] do
+            source_pos = source_pos + 1
+          end
+        end
+        local target, pos = alias_source(tokens, source_pos, adapter_kind)
+        if target then
+          if adapter_kind == "mysql" and tokens[pos] and tokens[pos].upper == "PARTITION" then
+            local partitions, after = column_list(tokens, pos + 1)
+            pos = partitions and after or #tokens + 1
+          end
+          local clause = tokens[pos] and tokens[pos].upper
+          local is_clause = false
+          if adapter_kind == "sqlserver" and keyword == "FROM"
+              and (clause == "OUTPUT" or clause == "OPTION") then
+            is_clause, closing_parens = delete_from_target(tokens, idx, closing_parens)
+          end
+          if not is_clause then target_alias(tokens, aliases, explicit, target, pos, true) end
+        end
+      elseif keyword == "INSERT" or keyword == "REPLACE" then
+        insert_aliases(tokens, aliases, explicit, idx + 1, adapter_kind)
       end
     end
   end
-
   return aliases
 end
 
 -- ── Alias cache ────────────────────────────────────────────────────────────────
--- extract_aliases concatenates the whole buffer and runs several gmatch passes;
--- doing that on every keystroke (omnifunc, TextChangedI, cmp source all called it
--- unconditionally) was the actual perf cost, not the schema lookup. Cache by
--- (bufnr, changedtick): cursor-only motions don't bump changedtick, and keying by
--- bufnr too keeps two different buffers from colliding on the same tick value.
+-- Tokenizing the whole buffer is only necessary after an edit or connection
+-- change. Cursor-only completion requests reuse this map across all providers.
 
---- M._alias_cache[bufnr] = { tick = changedtick, aliases = {...} }
+--- M._alias_cache[bufnr] = { tick = changedtick, url = url, aliases = {...} }
 --- One entry per buffer (not a history of ticks) is enough: only the latest
 --- buffer content is ever queried.
 M._alias_cache = {}
@@ -152,16 +310,17 @@ M._alias_cache = {}
 --- Return the alias map for `bufnr`, re-parsing only when its changedtick
 --- moved since the last call. Exported (not local) so all three call sites
 --- (omnifunc, TextChangedI, cmp source) share one cache.
-function M._get_cached_aliases(bufnr)
+function M._get_cached_aliases(bufnr, url)
   local tick = vim.api.nvim_buf_get_changedtick(bufnr)
   local cached = M._alias_cache[bufnr]
-  if cached and cached.tick == tick then
+  if cached and cached.tick == tick and cached.url == url then
     return cached.aliases
   end
 
+  local kind = require("dadbod-grip.adapters").kind(require("dadbod-grip.db").resolved_url(url))
   local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local aliases = M.extract_aliases(table.concat(all_lines, "\n"))
-  M._alias_cache[bufnr] = { tick = tick, aliases = aliases }
+  local aliases = M.extract_aliases(table.concat(all_lines, "\n"), kind)
+  M._alias_cache[bufnr] = { tick = tick, url = url, aliases = aliases }
   return aliases
 end
 
@@ -178,10 +337,72 @@ vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
 
 -- ── Context parsing ────────────────────────────────────────────────────────────
 
+-- A prior unclosed [ can belong to this identifier: embedded opening brackets
+-- are ordinary text. Most qualifiers have no earlier [ or follow a closed one.
+local function ambiguous_bracket(before, opening)
+  if before:find("[", 1, true) == opening then return false end
+  local pos = opening - 1
+  while pos > 0 do
+    local byte = before:byte(pos)
+    if byte == 91 then return true end
+    if byte == 93 then
+      if before:byte(pos - 1) ~= 93 then return false end
+      pos = pos - 2
+    else
+      pos = pos - 1
+    end
+  end
+  return false
+end
+
+-- A single ambiguous prefix is enough for cursor movement and column typing.
+-- Retain no buffer history; earlier SQL, qualifier, or dialect changes replace it.
+local _bracket_context_cache
+
+-- Read a trailing qualifier without interpreting text inside its quotes as SQL.
+local function dotted_qualifier(before, adapter_kind)
+  local qualifier, word = before:match("([%w_$\128-\255]+)%.([%w_$\128-\255]*)$")
+  if qualifier then return qualifier, word, false end
+  local dot, quoted_word = before:match("()%.([%w_$\128-\255]*)$")
+  if not dot then return end
+  local finish = dot - 1
+  local close = before:sub(finish, finish)
+  local opening = close == "]" and "[" or close
+  if close ~= '"' and close ~= "`" and close ~= "]" then return end
+  local pos = finish - 1
+  while pos > 0 do
+    local ch = before:sub(pos, pos)
+    if ch == close and before:sub(pos - 1, pos - 1) == close then
+      pos = pos - 2
+    elseif ch == opening then
+      if close == "]" and ambiguous_bracket(before, pos) then
+        local prefix, kind = before:sub(1, dot), adapter_kind or "sqlserver"
+        local cached = _bracket_context_cache
+        if not cached or cached.prefix ~= prefix or cached.kind ~= kind then
+          -- Resolve embedded brackets with the shared lexer, only for this line.
+          local tokens = require("dadbod-grip.sql_tokens").tokenize(
+            before:sub(1, finish), kind, "completion_positions")
+          local last = tokens and tokens[#tokens]
+          local name
+          if last and last.kind == "ident" and last.finish == finish
+              and before:sub(last.start, last.start) == "[" then name = last.text end
+          cached = { prefix = prefix, kind = kind, qualifier = name }
+          _bracket_context_cache = cached
+        end
+        return cached.qualifier, quoted_word, true
+      end
+      local text = before:sub(pos + 1, finish - 1)
+      return text:gsub(close .. close, close), quoted_word, true
+    else
+      pos = pos - 1
+    end
+  end
+end
+
 --- Classify the SQL text before the cursor.
 --- Returns one of: "table", "column", "dotted", "fed_column", or nil.
 --- (Simple string result for the most common cases.)
-function M.parse_context(before)
+function M.parse_context(before, adapter_kind)
   if not before or before == "" then return nil end
   -- Strip trailing comment
   if before:match("^%-%-") then return nil end
@@ -194,7 +415,7 @@ function M.parse_context(before)
   end
 
   -- dotted: qualifier.word (two-part)
-  if before:match("[%w_]+%.[%w_]*$") then
+  if dotted_qualifier(before, adapter_kind) then
     return "dotted"
   end
 
@@ -220,7 +441,7 @@ end
 
 --- Full context parse: returns structured table with type, word, qualifier, alias, table fields.
 --- Used by omnifunc and by tests that need the full detail.
-function M.parse_context_full(before)
+function M.parse_context_full(before, adapter_kind)
   if not before or before == "" then return nil end
   if before:match("^%-%-") then return nil end
 
@@ -231,9 +452,9 @@ function M.parse_context_full(before)
   end
 
   -- dotted: qualifier.word
-  local qualifier, qword = before:match("([%w_]+)%.([%w_]*)$")
+  local qualifier, qword, quoted = dotted_qualifier(before, adapter_kind)
   if qualifier then
-    return { type = "dotted", qualifier = qualifier, word = qword }
+    return { type = "dotted", qualifier = qualifier, word = qword, quoted = quoted }
   end
 
   local up = before:upper()
@@ -278,12 +499,22 @@ local SQL_KEYWORDS = {
   "COUNT", "SUM", "AVG", "MIN", "MAX", "COALESCE", "NULLIF", "CAST",
 }
 
+-- Only bracketed qualifiers need dialect-aware tokenization of the cursor
+-- line. Reuse warmed schema metadata; a cold bracket request resolves it once.
+local function context_kind(before, url)
+  local cached = _cache[url]
+  if cached then return cached.kind end
+  if before:match("%]%.[%w_$\128-\255]*$") then
+    return require("dadbod-grip.adapters").kind(require("dadbod-grip.db").resolved_url(url))
+  end
+end
+
 --- Return completion items for `before` (text before cursor) and the given URL.
 --- Optional `aliases` table maps SQL alias -> table_name for dotted completion.
 --- Returns array of { word, menu } items.
 function M.complete(before, url, aliases)
   aliases = aliases or {}
-  local ctx = M.parse_context_full(before)
+  local ctx = M.parse_context_full(before, context_kind(before, url))
   if not ctx then
     -- No SQL context yet: complete keywords by prefix (e.g. "SEL" -> "SELECT").
     local word = before:match("([%w_]*)$") or ""
@@ -299,6 +530,8 @@ function M.complete(before, url, aliases)
   end
 
   local schema = M.get_schema(url)
+  local cached_schema = _cache[url]
+  local fold_case = cached_schema and cached_schema.fold_case
   local items = {}
 
   if ctx.type == "table" then
@@ -333,15 +566,38 @@ function M.complete(before, url, aliases)
 
   elseif ctx.type == "dotted" then
     local q = ctx.qualifier
+    if cached_schema and cached_schema.kind == "postgresql" and not ctx.quoted then q = q:lower() end
     -- Check if qualifier is a known table alias resolving to a local table
-    local resolved = aliases[q] or q
-    local cols = schema[resolved]
+    local resolved = (fold_case and folded_lookup(aliases, q))
+      or aliases[q] or (not ctx.quoted and aliases[q:lower()]) or q
+    local row_alias = type(resolved) == "table" and resolved or nil
+    local table_name = row_alias and row_alias.table_name or resolved
+    local cols = schema[table_name] or (fold_case and folded_lookup(schema, table_name))
     if cols then
-      -- qualifier is a table name (or aliased table): complete its columns
-      for _, col in ipairs(cols) do
-        local cname = col.column_name
-        if cname and cname:sub(1, #ctx.word) == ctx.word then
-          table.insert(items, item(cname, "[" .. (col.data_type or "?") .. "]"))
+      if row_alias then
+        -- Column aliases rename the inserted values in their declared order.
+        -- An explicit INSERT column list can differ from the table's order.
+        local by_name = {}
+        local fold_columns = cached_schema and cached_schema.kind == "mysql"
+        for _, col in ipairs(cols) do
+          local name = fold_columns and col.column_name:lower() or col.column_name
+          by_name[name] = col
+        end
+        for idx, cname in ipairs(row_alias.columns) do
+          local source_name = row_alias.source_columns and row_alias.source_columns[idx]
+          if source_name and fold_columns then source_name = source_name:lower() end
+          local col = source_name and by_name[source_name] or (not row_alias.source_columns and cols[idx])
+          if cname:sub(1, #ctx.word) == ctx.word then
+            table.insert(items, item(cname, "[" .. (col and col.data_type or "?") .. "]"))
+          end
+        end
+      else
+        -- qualifier is a table name (or aliased table): complete its columns
+        for _, col in ipairs(cols) do
+          local cname = col.column_name
+          if cname and cname:sub(1, #ctx.word) == ctx.word then
+            table.insert(items, item(cname, "[" .. (col.data_type or "?") .. "]"))
+          end
         end
       end
     else
@@ -479,7 +735,7 @@ function M.omnifunc(findstart, base)
     -- Extract aliases from the full buffer so dotted completion resolves
     -- e.g. "SELECT e." where "FROM employees e" appears elsewhere in the query.
     -- Cached by changedtick: see M._get_cached_aliases.
-    local aliases = M._get_cached_aliases(vim.api.nvim_get_current_buf())
+    local aliases = M._get_cached_aliases(vim.api.nvim_get_current_buf(), url)
 
     -- For dotted completion, we need the full context including qualifier.
     -- The `base` from Vim may strip the qualifier, so we use `before` directly.
@@ -532,10 +788,10 @@ function M.setup_auto_complete(bufnr, url_fn)
 
         -- Require ≥1 word char OR a trailing dot (dotted context: supplier., alias.).
         local word = before:match("([%w_]*)$") or ""
-        local in_dotted_ctx = before:match("[%w_]+%.[%w_]*$") ~= nil
+        local in_dotted_ctx = dotted_qualifier(before, context_kind(before, url)) ~= nil
         if word == "" and not in_dotted_ctx then return end
 
-        local aliases = M._get_cached_aliases(bufnr)
+        local aliases = M._get_cached_aliases(bufnr, url)
 
         local raw = M.complete(before, url, aliases)
         if #raw == 0 then return end
@@ -596,7 +852,7 @@ function M.register_cmp_source()
     local before = params.context.cursor_before_line
     local bufnr  = params.context.bufnr
 
-    local aliases = M._get_cached_aliases(bufnr)
+    local aliases = M._get_cached_aliases(bufnr, url)
 
     local raw = M.complete(before, url, aliases)
     if #raw == 0 then callback(nil) return end

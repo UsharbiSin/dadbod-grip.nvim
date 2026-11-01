@@ -9,12 +9,16 @@ for byte = 128, 255 do word_start[byte] = true end
 word_start[95] = true
 
 -- Default mode preserves the conservative SELECT editability token stream.
--- true adds source positions for mutation parsing. Partial mode returns only
--- complete prefix tokens; execution and editability checks use strict mode.
+-- true adds source positions for mutation parsing. "completion" also recognizes
+-- parameters and SQL Server temp names/comments; "completion_positions" retains
+-- their positions for cursor context. Partial mode
+-- returns only complete prefix tokens if editing stops inside a token
+-- or comment; SQL execution and editability checks always use strict mode.
 function M.tokenize(sql_text, adapter_kind, with_positions, partial)
   local tokens, count = {}, 0
   local i, len = 1, #sql_text
-  local positions = with_positions == true
+  local positions = with_positions == true or with_positions == "completion_positions"
+  local completion = with_positions == "completion" or with_positions == "completion_positions"
 
   local function read_number()
     local radix_pattern
@@ -116,7 +120,8 @@ function M.tokenize(sql_text, adapter_kind, with_positions, partial)
         local newline = sql_text:find("[\r\n]", i + (byte == 35 and 1 or 2))
         if newline and sql_text:byte(newline) == 13
             and sql_text:byte(newline + 1) ~= 10
-            and adapter_kind ~= "postgresql" and adapter_kind ~= "duckdb" then return nil end
+            and adapter_kind ~= "postgresql" and adapter_kind ~= "duckdb"
+            and not (completion and adapter_kind == "sqlserver") then return nil end
         i = newline and (newline + 1) or (len + 1)
       end
     elseif byte == 47 and next_byte == 42 then
@@ -134,7 +139,8 @@ function M.tokenize(sql_text, adapter_kind, with_positions, partial)
         if not marker then i = len + 1; break end
         local pair = sql_text:sub(marker, marker + 1)
         if pair == "/*" then
-          if adapter_kind ~= "postgresql" then return nil end
+          if adapter_kind ~= "postgresql"
+              and not (completion and adapter_kind == "sqlserver") then return nil end
           depth = depth + 1
           i = marker + 2
         elseif pair == "*/" then
@@ -170,14 +176,44 @@ function M.tokenize(sql_text, adapter_kind, with_positions, partial)
       else
         token = { kind = "ident", text = word, upper = upper }
       end
-    elseif byte == 36 and (adapter_kind == "postgresql" or adapter_kind == "duckdb") then
-      local delimiter = sql_text:match("^%$%$", i)
-        or sql_text:match("^%$[%a_\128-\255][%w_\128-\255]*%$", i)
-      if not delimiter then return partial and tokens or nil end
-      local close = sql_text:find(delimiter, i + #delimiter, true)
-      if not close then return partial and tokens or nil end
+    elseif byte == 36 and (adapter_kind == "postgresql" or adapter_kind == "duckdb"
+        or (completion and adapter_kind == "sqlite")) then
+      local delimiter = adapter_kind ~= "sqlite" and (sql_text:match("^%$%$", i)
+        or sql_text:match("^%$[%a_\128-\255][%w_\128-\255]*%$", i))
+      if delimiter then
+        local close = sql_text:find(delimiter, i + #delimiter, true)
+        if not close then return partial and tokens or nil end
+        i = close + #delimiter
+      elseif completion then
+        -- Parameters are opaque values for alias discovery only. Execution
+        -- checks retain their strict fallback for statements needing bindings.
+        local named = adapter_kind == "sqlite" or (adapter_kind == "duckdb" and word_start[next_byte])
+        local pattern = named and "^%$[%w_$\128-\255]+" or "^%$%d+"
+        local _, finish = sql_text:find(pattern, i)
+        if not finish then return partial and tokens or nil end
+        i = finish + 1
+        if adapter_kind == "sqlite" then
+          while sql_text:sub(i, i + 1) == "::" do
+            _, finish = sql_text:find("^::[%w_$\128-\255]*", i)
+            i = finish + 1
+          end
+          if sql_text:byte(i) == 40 then
+            _, finish = sql_text:find("^%([^%s%)]*%)", i)
+            if not finish then return partial and tokens or nil end
+            i = finish + 1
+          end
+        elseif word_start[sql_text:byte(i)] or sql_text:byte(i) == 36 then
+          return partial and tokens or nil
+        end
+      else
+        return partial and tokens or nil
+      end
       token = { kind = "literal" }
-      i = close + #delimiter
+    elseif byte == 35 and completion and adapter_kind == "sqlserver" then
+      local _, finish = sql_text:find("^##?[%w_@$#\128-\255]+", i)
+      if not finish then return partial and tokens or nil end
+      local word = sql_text:sub(i, finish)
+      token, i = { kind = "ident", text = word, upper = word:upper() }, finish + 1
     elseif byte == 36 or (byte == 35 and adapter_kind ~= "postgresql" and adapter_kind ~= "duckdb") then
       return nil
     else

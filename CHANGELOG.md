@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Alias completion recognizes mutation targets and MySQL inserted-row aliases,
+  including column renames, while ignoring strings and comments. The alias
+  cache is shared by completion providers and follows connection changes.
+  SQLite UPDATE OR modifiers and MySQL/MariaDB priority and PARTITION clauses
+  no longer hide target aliases; SQL Server clause keywords are not aliases.
+  Keyword-shaped variables do not create false aliases, and SQLite/DuckDB
+  completion resolves quoted aliases and table names case-insensitively.
+  Repeated REPLACE column names no longer cause quadratic completion scans.
+  Dollar parameters, SQL Server temporary tables and nested comments, SQLite
+  single-quoted table sources, embedded brackets in quoted aliases, and MySQL
+  renamed-row column types no longer interrupt or misdirect completion.
 - Mutation previews parse UPDATE, DELETE, INSERT, and REPLACE with shared SQL
   tokens. Target aliases, quoted names, comments, nested expressions, and
   RETURNING no longer corrupt predicates, column mappings, or VALUES rows.

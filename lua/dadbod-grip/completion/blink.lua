@@ -38,8 +38,7 @@ function source:get_completions(ctx, callback)
 
   local before  = ctx.line:sub(1, ctx.cursor[2])
   local bufnr   = (ctx and ctx.bufnr) or vim.api.nvim_get_current_buf()
-  local lines   = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local aliases = completion.extract_aliases(table.concat(lines, "\n"))
+  local aliases = completion._get_cached_aliases(bufnr, url)
 
   local raw = completion.complete(before, url, aliases)
   if #raw == 0 then

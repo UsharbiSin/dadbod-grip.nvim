@@ -293,6 +293,39 @@ do
   eq(a["e"], "employees", "extract: FROM table AS alias")
 end
 
+-- UPDATE targets participate in dotted completion with or without AS.
+for _, sql_text in ipairs({
+  "UPDATE orders o SET total = 1 WHERE o.",
+  "update orders o set total = 1 where o.",
+  "UPDATE\norders\no\nSET total = 1 WHERE o.",
+  'UPDATE "orders" o SET total = 1 WHERE o.',
+  "UPDATE `orders` o SET total = 1 WHERE o.",
+  "UPDATE orders AS o SET total = 1 WHERE o.",
+  "DELETE FROM orders o WHERE o.",
+  "DELETE o FROM orders o WHERE o.",
+}) do
+  eq(ea(sql_text)["o"], "orders", "extract: mutation target alias in " .. sql_text)
+end
+eq(next(ea("UPDATE orders SET total = 1")), nil, "extract: UPDATE SET is not an alias")
+eq(next(ea("SELECT last_update orders o")), nil, "extract: UPDATE inside an identifier is ignored")
+eq(next(ea("SELECT x$UPDATE orders o")), nil, "extract: UPDATE after identifier dollar is ignored")
+eq(next(ea("SELECT 名UPDATE orders o")), nil, "extract: UPDATE after Unicode identifier is ignored")
+eq(ea("UPDATE orders o SET total = 1; UPDATE users u SET name = 'x'")["u"],
+  "users", "extract: UPDATE alias in a later statement")
+
+do
+  local restore = mock_db({ users = USERS_COLS, orders = ORDERS_COLS })
+  completion.invalidate(PG_URL)
+  local sql_text = "UPDATE orders o SET total = 1 WHERE o."
+  local items = completion.complete(sql_text, PG_URL, ea(sql_text))
+  local names = {}
+  for _, item in ipairs(items) do names[item.word] = true end
+  ok(names["total"], "UPDATE alias+complete: target column total")
+  ok(names["user_id"], "UPDATE alias+complete: target column user_id")
+  eq(names["email"], nil, "UPDATE alias+complete: no unrelated table columns")
+  restore()
+end
+
 -- JOIN table alias
 do
   local a = ea("FROM orders o JOIN employees e ON o.emp_id = e.id")
@@ -747,6 +780,514 @@ do
 
   vim.api.nvim_buf_delete(bufnr, { force = true })
   eq(completion._alias_cache[bufnr], nil, "alias cache: entry cleared after BufWipeout/BufDelete")
+end
+
+-- Mutation aliases are parsed as SQL tokens, including quoted names/comments.
+for _, sql_text in ipairs({
+  "UPDATE orders /* target */ AS o SET total=1 WHERE o.",
+  "UPDATE orders -- target\n o SET total=1 WHERE o.",
+  'UPDATE "orders" AS "o" SET total=1 WHERE o.',
+  "DELETE FROM orders AS o WHERE o.",
+  "INSERT INTO orders AS o (id,total) VALUES (1,2) ON CONFLICT(id) DO UPDATE SET total=excluded.total WHERE o.",
+  "REPLACE INTO orders AS o (id,total) VALUES (1,2)",
+  "INSERT OR REPLACE INTO orders AS o (id,total) VALUES (1,2)",
+}) do
+  eq(ea(sql_text)["o"], "orders", "extract tokenized target: " .. sql_text)
+end
+for _, sql_text in ipairs({
+  "SELECT 'FROM orders fake'",
+  "SELECT 1 -- FROM orders fake",
+  "SELECT 1 /* UPDATE orders fake SET total=1 */",
+  "SELECT total AS fake FROM orders",
+  "INSERT INTO orders(id,total) VALUES(1,2) ON CONFLICT(id) DO UPDATE SET total=excluded.total",
+  "INSERT INTO orders(id,total) VALUES(1,2) ON DUPLICATE KEY UPDATE total=1",
+}) do
+  eq(next(ea(sql_text)), nil, "extract ignores fake source: " .. sql_text)
+end
+eq(ea("UPDATE orders o SET total=1 # FROM users fake\n WHERE o.", "mysql")["fake"], nil,
+  "extract ignores MySQL hash comments")
+eq(ea("UPDATE orders /* nested /* fake */ still comment */ o SET total=1", "postgresql")["o"],
+  "orders", "extract PostgreSQL nested target comments")
+eq(ea("UPDATE orders o SET total=$q$ FROM users fake $q$ WHERE o.", "postgresql")["fake"], nil,
+  "extract ignores PostgreSQL dollar strings")
+eq(next(ea("UPDATE orders /*! AS fake */ SET total=1", "mysql")), nil,
+  "extract refuses executable MySQL comments")
+eq(ea("UPDATE orders o SET total='unfinished FROM users fake").fake, nil,
+  "extract does not interpret an unfinished string")
+eq(ea('INSERT INTO "Mixed"."Orders" AS "O" (id) VALUES(1)', "postgresql")["O"],
+  "Mixed.Orders", "extract preserves quoted PostgreSQL source and alias case")
+eq(ea("SELECT * FROM employees AS e JOIN orders e ON true")["e"], "employees",
+  "explicit alias keeps precedence over a later bare alias")
+
+do
+  local restore = mock_db({ users = USERS_COLS, orders = ORDERS_COLS })
+  completion.invalidate(MYSQL_URL)
+  local function complete_names(sql_text, before, kind)
+    local names, menus = {}, {}
+    for _, entry in ipairs(completion.complete(before, MYSQL_URL, ea(sql_text, kind))) do
+      names[entry.word], menus[entry.word] = true, entry.menu
+    end
+    return names, menus
+  end
+  local names = complete_names(
+    "INSERT INTO orders(id,total) VALUES(1,2) AS new ON DUPLICATE KEY UPDATE total=new.total",
+    "ON DUPLICATE KEY UPDATE total=new.", "mysql")
+  ok(names.total and names.id, "MySQL row alias completes target columns")
+  eq(names.email, nil, "MySQL row alias excludes unrelated columns")
+
+  local sql_text = "INSERT INTO orders(total,id) VALUES(2,1),(3,2) AS new(amount,key_id)"
+    .. " ON DUPLICATE KEY UPDATE total=new.amount"
+  local menus
+  names, menus = complete_names(sql_text, "ON DUPLICATE KEY UPDATE total=new.", "mysql")
+  ok(names.amount and names.key_id, "MySQL row alias exposes renamed columns")
+  eq(names.total, nil, "MySQL renamed column hides original name")
+  eq(menus.amount, "[numeric]", "MySQL alias type follows explicit INSERT column order")
+  eq(menus.key_id, "[integer]", "MySQL second alias follows explicit INSERT column order")
+
+  names, menus = complete_names(
+    "INSERT INTO orders SET total=COALESCE(2,3),id=1 AS new(amount,key_id)"
+      .. " ON DUPLICATE KEY UPDATE total=new.amount",
+    "ON DUPLICATE KEY UPDATE total=new.a", "mysql")
+  ok(names.amount, "MySQL INSERT SET row alias completes")
+  eq(names.key_id, nil, "MySQL row alias respects typed prefix")
+  eq(menus.amount, "[numeric]", "MySQL INSERT SET alias type follows assignment order")
+
+  names = complete_names("INSERT INTO orders VALUES(1,2,3) AS new(key_id,user_key,amount)",
+    "ON DUPLICATE KEY UPDATE total=new.", "mysql")
+  ok(names.key_id and names.user_key and names.amount, "row column aliases without INSERT column list")
+  eq(names.id, nil, "row alias renames hide implicit schema names")
+
+  names = complete_names('UPDATE orders AS "odd alias" SET total=1 WHERE "odd alias".',
+    'WHERE "odd alias".')
+  ok(names.total, "quoted qualifier with spaces resolves target columns")
+  names = complete_names('UPDATE orders AS "odd""alias" SET total=1 WHERE "odd""alias".',
+    'WHERE "odd""alias".')
+  ok(names.total, "escaped quoted qualifier resolves target columns")
+  names = complete_names("UPDATE orders O SET total=1 WHERE O.", "WHERE O.")
+  ok(names.total, "unquoted uppercase reference resolves folded alias")
+  restore()
+end
+
+-- Dialect affects comment/string boundaries even when buffer text is unchanged.
+do
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+    "UPDATE orders o SET total=1 # FROM users fake",
+  })
+  eq(completion._get_cached_aliases(bufnr, MYSQL_URL).fake, nil,
+    "alias cache uses MySQL comment rules")
+  eq(completion._get_cached_aliases(bufnr, PG_URL).fake, "users",
+    "alias cache invalidates when the connection dialect changes")
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+-- Columns named VALUE and quoted row aliases keep their explicit mapping.
+do
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+    { column_name = "value", data_type = "text" },
+  } })
+  completion.invalidate(MYSQL_URL)
+  local aliases = ea("INSERT INTO items(value,id) VALUES('x',1) AS new(v,i)", "mysql")
+  local menus = {}
+  for _, entry in ipairs(completion.complete("SET value=new.", MYSQL_URL, aliases)) do
+    menus[entry.word] = entry.menu
+  end
+  eq(menus.v, "[text]", "VALUE column preserves reordered INSERT mapping")
+  eq(menus.i, "[integer]", "ID column preserves reordered INSERT mapping")
+  restore()
+end
+
+-- Blink uses the same alias cache and row-alias mapping as the other providers.
+do
+  local restore = mock_db({ orders = ORDERS_COLS })
+  completion.invalidate(MYSQL_URL)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  local previous_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_set_current_buf(bufnr)
+  vim.b.db = MYSQL_URL
+  local line = "INSERT INTO orders(id,total) VALUES(1,2) AS new ON DUPLICATE KEY UPDATE total=new."
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, { line })
+  local extract, calls = completion.extract_aliases, 0
+  completion.extract_aliases = function(...)
+    calls = calls + 1
+    return extract(...)
+  end
+  local source = require("dadbod-grip.completion.blink").new()
+  local labels = {}
+  local blink_context = { line = line, cursor = { 1, #line }, bufnr = bufnr }
+  for _ = 1, 2 do
+    source:get_completions(blink_context, function(result)
+      for _, entry in ipairs(result.items) do labels[entry.label] = true end
+    end)
+  end
+  ok(labels.total, "Blink completes MySQL inserted-row alias")
+  eq(calls, 1, "Blink cursor-only calls reuse the alias cache")
+  completion.extract_aliases = extract
+  vim.api.nvim_set_current_buf(previous_buf)
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  restore()
+end
+
+-- Nonreserved keyword-shaped table names remain valid completion sources.
+for _, table_name in ipairs({ "do", "replace", "left", "inner", "end", "offset" }) do
+  eq(ea("SELECT d.id FROM " .. table_name .. " AS d", "sqlite").d, table_name,
+    "source table name is not filtered as an alias keyword: " .. table_name)
+end
+
+-- Resolve whole-URL templates only on cache misses, without retaining expansion.
+do
+  local template = "${GRIP_COMPLETION_TEST_URL}"
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+    "UPDATE orders o SET total=1 # FROM users fake",
+  })
+  local resolve, calls, expanded = db.resolved_url, 0, MYSQL_URL
+  db.resolved_url = function(url)
+    if url == template then calls = calls + 1; return expanded end
+    return resolve(url)
+  end
+  eq(completion._get_cached_aliases(bufnr, template).fake, nil,
+    "template connection uses expanded MySQL dialect")
+  completion._get_cached_aliases(bufnr, template)
+  eq(calls, 1, "cached completion does not re-expand connection URL")
+  eq(completion._alias_cache[bufnr].url, template, "alias cache retains only original URL")
+  expanded = PG_URL
+  completion.invalidate(template)
+  eq(completion._get_cached_aliases(bufnr, template).fake, "users",
+    "connection invalidation refreshes the template dialect")
+  db.resolved_url = resolve
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+end
+
+for _, suffix in ipairs({
+  "'unfinished FROM users fake",
+  "/* unfinished FROM users fake",
+  "$body$unfinished FROM users fake",
+}) do
+  local aliases = ea("SELECT i.id FROM items i; INSERT INTO users VALUES (" .. suffix, "postgresql")
+  eq(aliases.i, "items", "unfinished suffix retains completed aliases: " .. suffix)
+  eq(aliases.fake, nil, "unfinished suffix does not expose text as SQL: " .. suffix)
+end
+-- Source modifiers are separate from the target identifier.
+for _, sql_text in ipairs({
+  "SELECT i.id FROM ONLY items AS i",
+  "UPDATE ONLY items AS i SET value='x' WHERE i.",
+  "DELETE FROM ONLY items AS i WHERE i.",
+}) do
+  eq(ea(sql_text, "postgresql").i, "items", "PostgreSQL ONLY target alias: " .. sql_text)
+end
+
+do
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+    { column_name = "value", data_type = "text" },
+  } })
+  completion.invalidate(MYSQL_URL)
+  for _, sql_text in ipairs({
+    "INSERT INTO items SET value='x' AS new(v)",
+    "INSERT INTO items PARTITION(p1) (value) VALUES('x') AS new(v)",
+  }) do
+    local menus = {}
+    for _, entry in ipairs(completion.complete("SET value=new.", MYSQL_URL, ea(sql_text, "mysql"))) do
+      menus[entry.word] = entry.menu
+    end
+    eq(menus.v, "[text]", "row alias type keeps source column after modifiers: " .. sql_text)
+  end
+  restore()
+end
+
+for _, suffix in ipairs({ "1e", "1e+", "$tag", "$" }) do
+  local aliases = ea("SELECT i.id FROM items i WHERE i.id=" .. suffix, "postgresql")
+  eq(aliases.i, "items", "unfinished scalar prefix keeps source aliases: " .. suffix)
+end
+
+-- Mutation modifiers occupy source positions, never alias positions.
+for _, action in ipairs({ "ROLLBACK", "ABORT", "FAIL", "IGNORE", "REPLACE" }) do
+  local aliases = ea("UPDATE OR " .. action .. " items AS i SET value='x' WHERE i.", "sqlite")
+  eq(aliases.i, "items", "SQLite UPDATE OR " .. action .. " resolves target alias")
+  eq(aliases[action:lower()], nil, "SQLite conflict action is not a source alias")
+end
+for _, modifiers in ipairs({ "LOW_PRIORITY", "IGNORE", "LOW_PRIORITY IGNORE" }) do
+  local aliases = ea("UPDATE " .. modifiers .. " items AS i SET value='x' WHERE i.", "mysql")
+  eq(aliases.i, "items", "MySQL UPDATE modifiers preserve target alias: " .. modifiers)
+  eq(aliases.items, nil, "MySQL UPDATE modifier is not a target name: " .. modifiers)
+end
+for _, prefix in ipairs({ "UPDATE", "DELETE FROM", "SELECT i.id FROM" }) do
+  local aliases = ea(prefix .. " items PARTITION(p0,p1) AS i WHERE i.", "mysql")
+  eq(aliases.i, "items", "partition list precedes target alias: " .. prefix)
+  eq(aliases.partition, nil, "partition clause is not a bare alias: " .. prefix)
+end
+eq(ea("UPDATE items PARTITION(p0", "mysql").partition, nil,
+  "unfinished partition list does not become an alias")
+eq(ea("DELETE FROM items OUTPUT deleted.id WHERE id=1", "sqlserver").output, nil,
+  "SQL Server OUTPUT is not a DELETE target alias")
+eq(ea("DELETE i OUTPUT deleted.id FROM items AS i WHERE i.id=1", "sqlserver").i, "items",
+  "SQL Server OUTPUT preserves an explicit DELETE target alias")
+eq(ea("SELECT output.id FROM items output", "sqlite").output, "items",
+  "OUTPUT remains an ordinary alias in SQLite")
+eq(ea("SELECT output.id FROM items output", "sqlserver").output, "items",
+  "OUTPUT remains an ordinary SQL Server SELECT alias")
+eq(ea(string.rep("SELECT (", 64) .. "1" .. string.rep(") FROM items OUTPUT", 64),
+  "sqlserver").output, "items", "nested scalar SELECT keeps ordinary OUTPUT aliases")
+eq(ea("DELETE output FROM items output WHERE output.id=1", "sqlserver").output, "items",
+  "OUTPUT remains an alias in SQL Server DELETE source FROM")
+eq(ea("DELETE FROM items OPTION(RECOMPILE)", "sqlserver").option, nil,
+  "SQL Server OPTION is not a DELETE target alias")
+eq(ea("DELETE TOP (1) FROM items OUTPUT deleted.id", "sqlserver").output, nil,
+  "SQL Server TOP does not expose OUTPUT as an alias")
+eq(ea("DELETE TOP (10) PERCENT FROM items OPTION(RECOMPILE)", "sqlserver").option, nil,
+  "SQL Server TOP PERCENT does not expose OPTION as an alias")
+eq(ea("SELECT option.id FROM items option", "sqlite").option, "items",
+  "OPTION remains an ordinary alias in SQLite")
+eq(ea("DELETE [option] FROM items AS [option] WHERE [option].id=1", "sqlserver").option, "items",
+  "quoted OPTION remains a SQL Server source alias")
+eq(ea('DELETE [output] FROM items AS [output] WHERE [output].id=1', "sqlserver").output, "items",
+  "quoted OUTPUT remains an explicit SQL Server alias")
+eq(ea("SELECT i.id FROM low_priority AS i", "sqlite").i, "low_priority",
+  "UPDATE modifier words do not alter ordinary SELECT source extraction")
+
+-- MariaDB URL dispatch exercises the shared MySQL rules through the real cache.
+do
+  local url = "mariadb://localhost/completion_modifiers"
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+    { column_name = "value", data_type = "text" },
+  } })
+  completion.invalidate(url)
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, {
+    "UPDATE LOW_PRIORITY IGNORE items PARTITION(p0) AS i SET value='x' WHERE i.",
+  })
+  local aliases = completion._get_cached_aliases(bufnr, url)
+  eq(aliases.i, "items", "MariaDB connection dispatch recognizes mutation modifiers")
+  local names = {}
+  for _, entry in ipairs(completion.complete("WHERE i.", url, aliases)) do
+    names[entry.word] = true
+  end
+  ok(names.id and names.value, "MariaDB modified target completes actual table columns")
+  vim.api.nvim_buf_delete(bufnr, { force = true })
+  restore()
+end
+
+-- Keyword-shaped variables cannot introduce source aliases. In particular,
+-- a fake alias would hide completion for a real table with the same name.
+for _, kind in ipairs({ "mysql", "sqlserver" }) do
+  for _, variable in ipairs({ "update", "from", "join" }) do
+    local sql_text = "SELECT @" .. variable .. " AS items, items.id FROM items"
+    eq(next(ea(sql_text, kind)), nil, kind .. " variable is not a source: " .. variable)
+  end
+end
+
+do
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+  } })
+  for _, kind in ipairs({ "mysql", "sqlserver" }) do
+    local url = kind .. "://localhost/completion_variables"
+    completion.invalidate(url)
+    local text = "SELECT @update AS items, items.id FROM items"
+    local names = {}
+    for _, entry in ipairs(completion.complete("SELECT items.", url, ea(text, kind))) do
+      names[entry.word] = true
+    end
+    ok(names.id, kind .. " variable cannot shadow completion for the real table")
+  end
+  restore()
+end
+
+-- SQLite named parameters use either @ or :, including keyword-shaped names.
+do
+  local restore = mock_db({ items = {
+    { column_name = "id", data_type = "integer" },
+  } })
+  completion.invalidate(SQLITE_URL)
+  for _, prefix in ipairs({ "@", ":" }) do
+    for _, parameter in ipairs({ "update", "from", "join" }) do
+      local text = "SELECT " .. prefix .. parameter .. " AS items, items.id FROM items"
+      eq(next(ea(text, "sqlite")), nil, "SQLite parameter is not a source: " .. prefix .. parameter)
+    end
+    local text = "SELECT " .. prefix .. "update AS items, items.id FROM items"
+    local names = {}
+    for _, entry in ipairs(completion.complete("SELECT items.", SQLITE_URL, ea(text, "sqlite"))) do
+      names[entry.word] = true
+    end
+    ok(names.id, "SQLite " .. prefix .. "parameter preserves real-table column completion")
+  end
+  restore()
+end
+
+-- REPLACE is also a valid SQLite column/table name. Large SELECT lists must
+-- not repeatedly search the remaining query for an INSERT data clause.
+for _, naming in ipairs({ "replace AS c", "replace c" }) do
+  local fields = {}
+  for idx = 1, 1600 do fields[idx] = naming .. idx end
+  local aliases = ea("SELECT " .. table.concat(fields, ", ") .. " FROM items AS i", "sqlite")
+  eq(aliases.i, "items", "keyword-shaped SELECT columns preserve source alias")
+  local count = 0
+  for _ in pairs(aliases) do count = count + 1 end
+  eq(count, 1, "keyword-shaped SELECT columns do not introduce mutation aliases")
+end
+eq(ea("REPLACE INTO items(id) VALUES(1); SELECT i.id FROM items AS i", "sqlite").i,
+  "items", "REPLACE statement preserves following query aliases")
+eq(ea("SELECT r.id FROM replace AS r", "sqlite").r, "replace",
+  "keyword-shaped source table preserves its alias")
+
+-- SQLite and DuckDB fold even quoted identifiers; PostgreSQL must continue
+-- distinguishing them. Keep stored/displayed schema names in their original case.
+do
+  local restore = mock_db({
+    MixedItems = { { column_name = "id", data_type = "integer" } },
+    items = { { column_name = "lower_id", data_type = "integer" } },
+    Items = { { column_name = "upper_id", data_type = "integer" } },
+  })
+  for _, case in ipairs({ { "sqlite", SQLITE_URL }, { "duckdb", DUCK_URL } }) do
+    local kind, url = case[1], case[2]
+    completion.invalidate(url)
+    for _, target in ipairs({ "mixeditems", '"MixedItems"' }) do
+      local aliases = ea("UPDATE " .. target .. ' AS "MiX" SET id=1', kind)
+      for _, qualifier in ipairs({ "mix", "MIX", '"mIx"', '"MiX"' }) do
+        local result = completion.complete("WHERE " .. qualifier .. ".", url, aliases)
+        eq(result[1] and result[1].word, "id", kind .. " folds alias and source: " .. qualifier)
+      end
+    end
+    -- Repeated completion reuses schema and folded-name indexes.
+    local aliases = ea('UPDATE "MixedItems" AS "MiX" SET id=1', kind)
+    for _ = 1, 2 do
+      eq(completion.complete('WHERE "mix".', url, aliases)[1].word, "id",
+        kind .. " repeated folded lookup")
+    end
+  end
+  completion.invalidate(PG_URL)
+  local aliases = ea('SELECT * FROM "Items" AS "I" JOIN items AS i ON true', "postgresql")
+  eq(completion.complete('SELECT "I".', PG_URL, aliases)[1].word, "upper_id",
+    "PostgreSQL quoted uppercase alias retains distinct target")
+  eq(completion.complete("SELECT i.", PG_URL, aliases)[1].word, "lower_id",
+    "PostgreSQL unquoted lowercase alias retains distinct target")
+  eq(completion.complete("SELECT I.", PG_URL, aliases)[1].word, "lower_id",
+    "PostgreSQL unquoted uppercase reference folds before alias lookup")
+  eq(#completion.complete('SELECT "MiX".', PG_URL, ea("SELECT * FROM items AS mix", "postgresql")), 0,
+    "PostgreSQL quoted qualifier does not fold to unquoted alias")
+  for _, kind in ipairs({ "mysql", "sqlserver" }) do
+    local url = kind .. "://localhost/completion_case"
+    completion.invalidate(url)
+    eq(#completion.complete('SELECT "mix".', url, ea('SELECT * FROM "MixedItems" AS "MiX"', kind)), 0,
+      kind .. " does not assume a case-insensitive collation")
+  end
+  restore()
+end
+
+-- Complete parameter tokens must not truncate the remaining buffer's aliases.
+for _, case in ipairs({
+  { "postgresql", "$1" }, { "duckdb", "$1" }, { "duckdb", "$update" },
+  { "sqlite", "$id" }, { "sqlite", "$ns::update(suffix)" },
+}) do
+  local kind, parameter = case[1], case[2]
+  local aliases = ea("SELECT " .. parameter .. ", i.id FROM items AS i; SELECT u.id FROM users AS u", kind)
+  eq(aliases.i, "items", kind .. " aliases after parameter: " .. parameter)
+  eq(aliases.u, "users", kind .. " later statement after parameter: " .. parameter)
+  aliases = ea("SELECT i.id FROM items AS i WHERE i.id=" .. parameter, kind)
+  eq(aliases.i, "items", kind .. " aliases before parameter: " .. parameter)
+end
+for _, temp in ipairs({ "#temp", "##temp" }) do
+  local aliases = ea("SELECT i.id FROM items i JOIN " .. temp .. " t ON i.id=t.id", "sqlserver")
+  eq(aliases.i, "items", "SQL Server temporary source preserves ordinary alias: " .. temp)
+end
+for _, comment in ipairs({ "/* outer /* FROM users fake */ outer */", "-- comment\r" }) do
+  local aliases = ea("SELECT i.id FROM items i " .. comment .. "; SELECT u.id FROM users u", "sqlserver")
+  eq(aliases.i, "items", "SQL Server comment preserves preceding alias")
+  eq(aliases.u, "users", "SQL Server comment preserves following alias")
+  eq(aliases.fake, nil, "SQL Server nested comment never introduces an alias")
+end
+
+-- SQLite accepts single quotes at a table-source position, never as SQL text.
+for _, statement in ipairs({
+  "SELECT i.id FROM 'items' AS i",
+  "SELECT i.id FROM 'main'.'items' AS i",
+  "UPDATE 'items' AS i SET id=1",
+  "INSERT INTO 'items' AS i (id) VALUES(1)",
+}) do
+  local expected = statement:find("'main'", 1, true) and "main.items" or "items"
+  eq(ea(statement, "sqlite").i, expected, "SQLite single-quoted table source: " .. statement)
+end
+eq(ea("SELECT i.id FROM 'odd''table' AS i", "sqlite").i, "odd'table",
+  "SQLite escaped single-quoted table source")
+eq(ea("SELECT 'FROM users fake', i.id FROM 'items' AS i", "sqlite").fake, nil,
+  "SQLite source quoting does not expose string content as SQL")
+for _, kind in ipairs({ "postgresql", "mysql", "sqlserver" }) do
+  eq(ea("SELECT i.id FROM 'items' AS i", kind).i, nil,
+    kind .. " does not accept a literal as an ordinary table source")
+end
+
+-- An opening bracket inside a bracketed identifier is part of its name.
+do
+  local restore = mock_db({ items = { { column_name = "id", data_type = "integer" } } })
+  for _, case in ipairs({ { "sqlite", SQLITE_URL }, { "sqlserver", "sqlserver://localhost/completion_brackets" } }) do
+    local kind, url = case[1], case[2]
+    completion.invalidate(url)
+    local aliases = ea("SELECT [a[b].id FROM items AS [a[b]", kind)
+    if kind == "sqlite" then
+      local items = completion.complete("SELECT $id, [a[b].", url, aliases)
+      eq(items[1] and items[1].word, "id", "cold SQLite bracket context keeps parameter grammar")
+    end
+    for _, before in ipairs({
+      "SELECT [a[b].", "WHERE [other] = 1 AND [a[b].",
+      "SELECT '[ignored]' AS text, [a[b].", "SELECT /* [ignored */ [a[b].",
+    }) do
+      local context = completion.parse_context_full(before)
+      eq(context and context.qualifier, "a[b", "bracket qualifier preserves opening bracket: " .. before)
+      local items = completion.complete(before, url, aliases)
+      eq(items[1] and items[1].word, "id", kind .. " completes bracket qualifier: " .. before)
+    end
+  end
+  local aliases = ea("SELECT [a]]b[c].id FROM items AS [a]]b[c]", "sqlserver")
+  local items = completion.complete("SELECT [a]]b[c].", "sqlserver://localhost/completion_brackets", aliases)
+  eq(items[1] and items[1].word, "id", "SQL Server escaped closing and embedded opening brackets")
+  restore()
+end
+
+-- Ambiguous bracket context follows the complete SQL prefix and its dialect,
+-- while column typing keeps the current word independent of qualifier lookup.
+do
+  local first = completion.parse_context_full("SELECT [a[b].i", "sqlserver")
+  eq(first.qualifier, "a[b", "ambiguous bracket context resolves initial qualifier")
+  eq(first.word, "i", "ambiguous bracket context keeps initial column prefix")
+  local typed = completion.parse_context_full("SELECT [a[b].id", "sqlserver")
+  eq(typed.qualifier, "a[b", "column typing retains ambiguous bracket qualifier")
+  eq(typed.word, "id", "column typing updates the completion word")
+  eq(completion.parse_context_full("SELECT [x[y].", "sqlserver").qualifier, "x[y",
+    "changing ambiguous qualifier replaces previous context")
+  eq(completion.parse_context_full("SELECT '[x[y].", "sqlserver").qualifier, nil,
+    "changed preceding SQL cannot reuse a qualifier now inside a string")
+  local text = "SELECT $id, [a[b]."
+  eq(completion.parse_context_full(text, "sqlite").qualifier, "a[b",
+    "SQLite parameter permits ambiguous bracket context")
+  eq(completion.parse_context_full(text, "sqlserver").qualifier, nil,
+    "dialect change does not reuse SQLite parameter parsing")
+  eq(completion.parse_context_full(text, "sqlite").qualifier, "a[b",
+    "switching back restores matching dialect context")
+end
+
+-- MySQL column identifiers are case-insensitive even when table names are not.
+do
+  local restore = mock_db({ items = {
+    { column_name = "Total", data_type = "numeric" },
+    { column_name = "ID", data_type = "integer" },
+  } })
+  completion.invalidate(MYSQL_URL)
+  for _, statement in ipairs({
+    "INSERT INTO items(Total,ID) VALUES(1,2) AS new(amount,key_id)",
+    "INSERT INTO items(`TOTAL`,`id`) VALUES(1,2) AS new(amount,key_id)",
+    "INSERT INTO items SET TOTAL=1,id=2 AS new(amount,key_id)",
+  }) do
+    local menus = {}
+    for _, entry in ipairs(completion.complete("SET Total=new.", MYSQL_URL, ea(statement, "mysql"))) do
+      menus[entry.word] = entry.menu
+    end
+    eq(menus.amount, "[numeric]", "MySQL source column case preserves numeric alias type")
+    eq(menus.key_id, "[integer]", "MySQL source column case preserves integer alias type")
+  end
+  restore()
 end
 
 -- ── summary ───────────────────────────────────────────────────────────────────
