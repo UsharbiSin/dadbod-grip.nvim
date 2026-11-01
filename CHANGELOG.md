@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tokens. Target aliases, quoted names, comments, nested expressions, and
   RETURNING no longer corrupt predicates, column mappings, or VALUES rows.
   SQL Server OUTPUT clauses stay out of preview queries and SET values;
-  optional INTO/FROM spellings retain their target table.
+  optional INTO/FROM spellings retain their target table. WITH-prefixed SQL
+  Server writes with omitted INTO/FROM or table-variable targets require
+  confirmation instead of being misrouted as SELECT queries.
   UPDATE staging preserves NULL versus empty strings and the last assignment.
   INSERT preserves column order and positional NULLs; SQLite/DuckDB INSERT OR
   forms, DuckDB BY NAME/POSITION and FROM-first queries, parenthesized source

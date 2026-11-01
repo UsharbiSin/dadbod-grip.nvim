@@ -223,6 +223,69 @@ for _, case in ipairs({
   end)
 end
 
+-- WITH mutations use the existing whole-statement confirmation path, not a
+-- derived-table SELECT (which cannot contain SQL Server INSERT/DELETE).
+for _, sql in ipairs({
+  "WITH src AS (SELECT 4 AS id, 'new' AS value) INSERT items(id,value) SELECT * FROM src;",
+  "WITH src AS (SELECT 4 AS id, 'new' AS value) INSERT [dbo].[items](id,value) SELECT * FROM src;",
+  "-- leading comment\nwith src as (select 2 as id) delete /* target */ [dbo].[items]"
+    .. " OUTPUT deleted.id WHERE id IN (SELECT id FROM src);",
+  "WITH src AS (SELECT * FROM items WHERE id=2) DELETE src;",
+  "WITH src AS (SELECT 4 AS id, 'new' AS value) INSERT @items SELECT * FROM src;",
+  "WITH src AS (SELECT 2 AS id) DELETE @items WHERE id IN (SELECT id FROM src);",
+  "WITH src AS (SELECT 2 AS id) UPDATE @items SET value='new' WHERE id IN (SELECT id FROM src);",
+  "WITH src AS (SELECT 2 AS id), picked AS (SELECT id FROM src)"
+    .. " DELETE items WHERE id IN (SELECT id FROM picked);",
+  "WITH src AS (SELECT 4 AS id, 'new' AS value) INSERT INTO items SELECT * FROM src;",
+  "WITH src AS (SELECT 2 AS id) DELETE FROM items WHERE id IN (SELECT id FROM src);",
+}) do
+  test("SQL Server CTE mutation confirmation: " .. sql, function()
+    local spec, _, _, mutation = grip._resolve_query(sql, 100, "sqlserver")
+    eq(spec, nil, "CTE mutation must not become a SELECT")
+    eq(mutation, sql, "complete CTE retained")
+    local prompts = 0
+    db.is_readonly = original.is_readonly
+    vim.fn.confirm = function(_, _, default)
+      prompts = prompts + 1
+      eq(default, 2, "confirmation defaults to cancel")
+      return 2
+    end
+    grip.open(sql, "sqlserver://unused/fixture", { from_pad = true })
+    eq(prompts, 1, "mutation requires confirmation")
+    eq(queries, {}, "cancellation must not query or count a mutation")
+    eq(writes, {}, "cancellation must not execute")
+    db.execute = function(statement)
+      writes[#writes + 1] = statement
+      return { affected = 1 }
+    end
+    vim.fn.confirm = function() prompts = prompts + 1; return 1 end
+    grip.open(sql, "sqlserver://unused/fixture", { from_pad = true })
+    eq(prompts, 2, "execution requires its own confirmation")
+    eq(queries, {}, "confirmed mutation must not be queried or counted")
+    eq(writes, { sql }, "confirmed CTE executes exact original SQL once")
+    eq(notices, {}, "CTE confirmation warnings/errors")
+  end)
+end
+
+for _, sql in ipairs({
+  "WITH [insert] AS (SELECT 1 AS id) SELECT * FROM [insert]",
+  'WITH "delete" AS (SELECT 1 AS id) SELECT * FROM "delete"',
+  "WITH src AS (SELECT 'INSERT items DELETE @items' AS value) SELECT * FROM src",
+  "WITH src AS (SELECT 1 AS id /* DELETE items */) SELECT * FROM src -- INSERT items",
+  "WITH src AS (SELECT REPLACE('delete', 'd', 'D') AS value) SELECT * FROM src",
+  "WITH src AS (SELECT 1 AS [delete]) SELECT src.[delete] AS value FROM src",
+  "WITH src AS (SELECT 1 AS id) SELECT @insert AS value FROM src",
+  "WITH src AS (SELECT 1 AS id) SELECT @delete AS value FROM src",
+  "WITH src AS (SELECT 1 AS id) SELECT @update AS value FROM src",
+  "WITH src AS (SELECT 1 AS id) SELECT src.insert AS value FROM src",
+}) do
+  test("SQL Server CTE query preserves lexical boundaries: " .. sql, function()
+    local spec, _, _, mutation = grip._resolve_query(sql, 100, "sqlserver")
+    assert(spec and spec.is_raw, "ordinary CTE remains a query")
+    eq(mutation, nil, "no mutation from quoted names, text, comments, or functions")
+  end)
+end
+
 cleanup()
 for name, fn in pairs(original) do db[name] = fn end
 vim.notify = notify

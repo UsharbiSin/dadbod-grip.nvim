@@ -489,6 +489,8 @@ All commands are global and available after the plugin loads.
   SELECT but retained for execution. SQL Server INSERT may omit INTO, and
   DELETE may omit FROM.
   Press a to confirm the original SQL or u/U to cancel.
+  Recognized WITH-prefixed mutations confirm the entire SQL directly; this
+  also covers SQL Server's optional INTO/FROM and table-variable targets.
 
   Ordinary INSERT VALUES shows literal incoming rows, preserving the column
   list, NULLs, and empty strings. MySQL INSERT SET and row/column aliases,

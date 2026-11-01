@@ -324,10 +324,16 @@ local function resolve_query(arg, page_size, adapter_kind)
     for idx, token in ipairs(tokens) do
       local next_token, previous = tokens[idx + 1], tokens[idx - 1]
       if next_token and (not previous or previous.kind ~= ".")
+          and not (adapter_kind == "sqlserver" and previous and previous.kind == "@")
           and ((token.upper == "UPDATE" and next_token.kind == "ident")
           or (token.upper == "DELETE" and next_token.upper == "FROM")
           or (token.upper == "INSERT" and (next_token.upper == "INTO" or next_token.upper == "OR"))
-          or (token.upper == "REPLACE" and next_token.upper == "INTO")) then
+          or (token.upper == "REPLACE" and next_token.upper == "INTO")
+          -- SQL Server permits omitted INTO/FROM and @table-variable targets.
+          -- Keep these CTE writes on the same whole-statement confirmation path.
+          or (adapter_kind == "sqlserver"
+            and (token.upper == "INSERT" or token.upper == "DELETE" or token.upper == "UPDATE")
+            and (next_token.kind == "ident" or next_token.kind == "@"))) then
         return nil, nil, nil, arg
       end
     end
