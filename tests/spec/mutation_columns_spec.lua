@@ -41,9 +41,11 @@ local function test(case)
   end
   local ok, err = pcall(function()
     local kind = case.kind or "sqlserver"
-    grip._mutation_preview(case.sql, kind .. "://unused/fixture", case.sql:match("^%u+"), {})
+    grip._mutation_preview(case.sql, kind .. "://unused/fixture", case.sql:match("^%u+"), {}, case.execution_sql)
     local session = assert(view._sessions[vim.api.nvim_get_current_buf()], table.concat(notices, "; "))
-    eq(session.pending_mutation.sql, case.sql, "retained SQL")
+    eq(session.pending_mutation.sql, case.execution_sql or case.sql, "retained SQL")
+    eq(session.pending_mutation.affected_count_unavailable, case.affected_count_unavailable,
+      "mutation count availability")
     eq(session.state.changes[1] or {}, case.changes or {}, "predicted UPDATE columns")
     local inserts = {}
     for _, row in pairs(session.state.inserted) do inserts[#inserts + 1] = row.values end
@@ -116,6 +118,19 @@ for _, case in ipairs({
     sql = "INSERT INTO items(id,value) VALUES(3,'new')", inserts = { { ID = "3", Value = "new" } } },
 }) do
   test(case)
+end
+
+for _, kind in ipairs({ "postgresql", "mysql", "mariadb", "sqlite", "duckdb", "sqlserver" }) do
+  for _, wrapped in ipairs({ false, true }) do
+    local statement = "UPDATE items SET value='new' WHERE id=2"
+    local begin = kind == "sqlserver" and "BEGIN TRANSACTION;" or "BEGIN;"
+    test({
+      name = kind .. (wrapped and " committed count" or " direct count"),
+      kind = kind, columns = { "id", "value" }, sql = statement, changes = { value = "new" },
+      execution_sql = wrapped and (begin .. statement .. ";COMMIT;") or nil,
+      affected_count_unavailable = wrapped and (kind == "mysql" or kind == "mariadb") or nil,
+    })
+  end
 end
 
 cleanup()

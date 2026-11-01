@@ -126,25 +126,138 @@ local function statement_type(text, adapter_kind)
   return tokens and tokens[1] and tokens[1].upper
 end
 
--- Locate the command after a conventional WITH list only when SQL Server's
--- optional-INTO MERGE needs it. Keeping this lazy avoids another scan for
--- ordinary CTE queries; aliases named merge must not become write commands.
-local function cte_command_index(tokens)
-  local depth, body, after_body = 0, false, false
-  for idx = 2, #tokens do
-    local token = tokens[idx]
-    if after_body then
-      if token.kind ~= "," then return idx end
-      after_body = false
-    elseif token.kind == "(" then
-      if depth == 0 and tokens[idx - 1].upper == "AS" then body = true end
-      depth = depth + 1
+-- Classify commands at WITH-body and outer-statement positions. PostgreSQL
+-- permits UPDATE/DELETE/etc. as ordinary column, alias and CTE names; scanning
+-- every word would mistake those reads for writes and discard their results.
+local cte_mutation_words = { UPDATE = true, DELETE = true, INSERT = true, REPLACE = true, MERGE = true }
+local function cte_mutation(tokens, adapter_kind)
+  -- Most WITH queries contain no DML words. Preserve their cheap read routing;
+  -- any candidate, including a nested or later statement, needs full context.
+  local candidate = false
+  for _, token in ipairs(tokens) do
+    if cte_mutation_words[token.upper] then candidate = true; break end
+  end
+  if not candidate then return false end
+  local matching, stack, starts = {}, {}, { 1 }
+  for idx, token in ipairs(tokens) do
+    if token.kind == "(" then
+      stack[#stack + 1] = idx
     elseif token.kind == ")" then
-      depth = depth - 1
-      if depth == 0 and body then body, after_body = false, true end
+      local opener = table.remove(stack)
+      if not opener then return nil end
+      matching[opener] = idx
+    elseif token.kind == ";" and #stack == 0 then
+      starts[#starts + 1] = idx + 1
+    end
+    -- T-SQL permits adjacent commands without separators. Its reserved DML
+    -- words retain the previous conservative check, excluding @variables and
+    -- qualified identifiers; PostgreSQL needs the structural checks below.
+    if adapter_kind == "sqlserver" then
+      local previous, following = tokens[idx - 1], tokens[idx + 1]
+      if following and (not previous or (previous.kind ~= "." and previous.kind ~= "@"))
+          and (((token.upper == "UPDATE" or token.upper == "DELETE" or token.upper == "INSERT")
+            and (following.kind == "ident" or following.kind == "@"))
+            or (token.upper == "MERGE" and following.upper == "INTO")) then return true end
     end
   end
-  return 0
+  if #stack > 0 then return nil end
+  local function keyword(pos, value)
+    return tokens[pos] and tokens[pos].upper == value
+  end
+  local function identifier(pos)
+    return tokens[pos] and tokens[pos].kind == "ident"
+  end
+  local function after_keyword(pos, value)
+    while tokens[pos] do
+      if keyword(pos, value) then return pos + 1 end
+      pos = (matching[pos] or pos) + 1
+    end
+  end
+  local function command(pos, wrapped)
+    -- A top-level SELECT/WITH may be wrapped in parentheses. EXPLAIN ANALYZE
+    -- can execute its inner mutation, including in a later batch statement.
+    while matching[pos] do pos = pos + 1 end
+    local verb = tokens[pos] and tokens[pos].upper
+    if verb == "EXPLAIN" then
+      pos = pos + 1
+      if matching[pos] then
+        pos = matching[pos] + 1
+      else
+        while keyword(pos, "ANALYZE") or keyword(pos, "ANALYSE") or keyword(pos, "VERBOSE") do
+          pos = pos + 1
+        end
+      end
+      return command(pos, true)
+    end
+    if verb == "UPDATE" or verb == "DELETE" or verb == "INSERT" or verb == "REPLACE" then return true end
+    if verb == "MERGE" then
+      return adapter_kind == "postgresql" or adapter_kind == "duckdb" or adapter_kind == "sqlserver"
+    end
+    if verb ~= "WITH" then
+      if wrapped and verb ~= "SELECT" and verb ~= "TABLE" and verb ~= "VALUES"
+          and not (adapter_kind == "duckdb" and verb == "FROM") then return nil end
+      return false
+    end
+    pos = pos + 1
+    if keyword(pos, "RECURSIVE") then pos = pos + 1 end
+    -- T-SQL WITH prefixes also carry XML namespaces or change tracking data.
+    if adapter_kind == "sqlserver" and (keyword(pos, "XMLNAMESPACES")
+        or keyword(pos, "CHANGE_TRACKING_CONTEXT")) then
+      if not matching[pos + 1] then return nil end
+      pos = matching[pos + 1] + 1
+      if not tokens[pos] or tokens[pos].kind ~= "," then return command(pos) end
+      pos = pos + 1
+    end
+    while identifier(pos) do
+      pos = pos + 1 -- CTE name, even when it spells a command keyword
+      if matching[pos] then pos = matching[pos] + 1 end -- optional columns
+      if adapter_kind == "duckdb" and keyword(pos, "USING") and keyword(pos + 1, "KEY") then
+        if not matching[pos + 2] then return nil end
+        pos = matching[pos + 2] + 1
+      end
+      if not keyword(pos, "AS") then return nil end
+      pos = pos + 1
+      if keyword(pos, "NOT") then pos = pos + 1 end
+      if keyword(pos, "MATERIALIZED") then pos = pos + 1 end
+      local finish = matching[pos]
+      if not finish then return nil end
+      local mutates = command(pos + 1)
+      if mutates ~= false then return mutates end
+      pos = finish + 1
+      -- Recursive SEARCH/CYCLE suffixes name output columns, not commands.
+      if keyword(pos, "SEARCH") then
+        if not (keyword(pos + 1, "DEPTH") or keyword(pos + 1, "BREADTH"))
+            or not keyword(pos + 2, "FIRST") or not keyword(pos + 3, "BY") then return nil end
+        pos = pos + 4
+        repeat
+          if not identifier(pos) then return nil end
+          pos = pos + 1
+          if not tokens[pos] or tokens[pos].kind ~= "," then break end
+          pos = pos + 1
+        until false
+        -- SET is also a legal sort-column name; only the delimiter after the
+        -- identifier list starts the output-column clause.
+        if not keyword(pos, "SET") or not identifier(pos + 1) then return nil end
+        pos = pos + 2
+      end
+      if keyword(pos, "CYCLE") then
+        pos = after_keyword(pos + 1, adapter_kind == "mysql" and "RESTRICT" or "USING")
+        if not pos then return nil end
+        if adapter_kind ~= "mysql" then
+          if not identifier(pos) then return nil end
+          pos = pos + 1
+        end
+      end
+      if not tokens[pos] or tokens[pos].kind ~= "," then return command(pos) end
+      pos = pos + 1
+    end
+    return nil
+  end
+  for _, pos in ipairs(starts) do
+    local mutates = command(pos)
+    if mutates ~= false then return mutates end
+  end
+  return false
 end
 
 -- Expose metadata only for direct columns of one known source. A dotted name
@@ -337,48 +450,13 @@ local function resolve_query(arg, page_size, adapter_kind)
     end
     return query.new_raw(arg, page_size), table_name
   end
-  -- CTE mutations retain the confirmed execution path. Keywords inside quoted
-  -- names, strings, comments, or REPLACE() calls must not change that routing.
+  -- CTE mutations retain the confirmed execution path, while identifier
+  -- spellings in read queries cannot change their routing.
   if upper == "WITH" then
     local tokens = tokenize_select(arg, adapter_kind, true)
-    if not tokens then return nil, "Could not safely classify this WITH statement" end
-    local outer_command
-    for idx, token in ipairs(tokens) do
-      local next_token, previous = tokens[idx + 1], tokens[idx - 1]
-      local update_lock = token.upper == "UPDATE" and previous
-        and (previous.upper == "FOR" or (previous.upper == "KEY"
-          and tokens[idx - 2] and tokens[idx - 2].upper == "NO"
-          and tokens[idx - 3] and tokens[idx - 3].upper == "FOR"))
-      if next_token and (not previous or (previous.kind ~= "." and previous.kind ~= "@"))
-          and not (adapter_kind == "sqlite" and previous and previous.kind == ":")
-          and not update_lock then
-        if token.upper == "MERGE" then
-          if next_token.upper == "INTO" and (adapter_kind == "postgresql"
-              or adapter_kind == "duckdb" or adapter_kind == "sqlserver") then
-            return nil, nil, nil, arg
-          elseif adapter_kind == "sqlserver"
-              and (next_token.kind == "ident" or next_token.kind == "@") then
-            outer_command = outer_command or cte_command_index(tokens)
-            if idx == outer_command then return nil, nil, nil, arg end
-          end
-        end
-        if ((token.upper == "UPDATE" and next_token.kind == "ident")
-          or (token.upper == "DELETE" and next_token.upper == "FROM")
-          or (token.upper == "INSERT" and (next_token.upper == "INTO" or next_token.upper == "OR"))
-          or (token.upper == "REPLACE" and next_token.upper == "INTO")
-          -- SQL Server permits omitted INTO/FROM and @table-variable targets.
-          -- Keep these CTE writes on the same whole-statement confirmation path.
-          or (adapter_kind == "sqlserver"
-            and (token.upper == "INSERT" or token.upper == "DELETE" or token.upper == "UPDATE")
-            and (next_token.kind == "ident" or next_token.kind == "@"))
-          -- MySQL/MariaDB DELETE permits priority modifiers and target aliases
-          -- before FROM. WITH keeps whole-statement confirmation for these too.
-          or (adapter_kind == "mysql" and token.upper == "DELETE"
-            and next_token.kind == "ident")) then
-          return nil, nil, nil, arg
-        end
-      end
-    end
+    local mutates = tokens and cte_mutation(tokens, adapter_kind)
+    if mutates == nil then return nil, "Could not safely classify this WITH statement" end
+    if mutates then return nil, nil, nil, arg end
     return query.new_raw(arg, page_size), nil
   end
   -- MERGE has no row-preview model. Preserve the original statement behind
@@ -1005,6 +1083,8 @@ function M._mutation_preview(mutation_sql, url, stmt_type, caller_opts, executio
       table_name = table_name,
       row_count = row_count,
       current_state = parsed.current_state or nil,
+      -- MySQL ROW_COUNT() after COMMIT counts the commit, not the mutation.
+      affected_count_unavailable = execution_sql ~= nil and kind == "mysql" or nil,
     },
   }
   if reuse_win then view_opts.reuse_win = reuse_win end

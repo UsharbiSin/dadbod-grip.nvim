@@ -102,45 +102,53 @@ function M.setup(bufnr, ctx)
     -- Mutation preview mode: execute the pending mutation
     if session.pending_mutation then
       local pm = session.pending_mutation
-      local current_win = vim.api.nvim_get_current_win()
-      local is_current = require("dadbod-grip.write").capture_owner(bufnr, session)
-      local function can_reload()
-        return is_current() and vim.api.nvim_win_is_valid(current_win)
-          and vim.api.nvim_win_get_buf(current_win) == bufnr
-          and vim.api.nvim_get_current_win() == current_win
-      end
-      local preview_count = pm.row_count and string.format("%d row%s previewed",
-        pm.row_count, pm.row_count == 1 and "" or "s") or "current data; affected rows determined on execution"
-      local choice = vim.fn.confirm(
-        string.format("Execute %s? (%s)\n\n%s", pm.type, preview_count, pm.sql:sub(1, 200)),
-        "&Execute\n&Cancel", 2)
-      if choice ~= 1 then return end
-      local written, err, ms, unknown = require("dadbod-grip.write").execute(pm.sql, session.url, pm.table_name)
-      if err then
-        vim.notify((unknown and "" or "Failed: ") .. err, vim.log.levels.ERROR)
-        return
-      end
-      local affected = written and tonumber(written.affected)
-      local result_count = affected and affected >= 0 and string.format(", %d row%s affected",
-        affected, affected == 1 and "" or "s") or ""
-      vim.notify(string.format("%s executed (%dms%s)", pm.type, ms, result_count), vim.log.levels.INFO)
-      local history = require("dadbod-grip.history")
-      history.record({ sql = pm.sql, url = session.url, type = pm.type:lower(), elapsed_ms = ms })
-      local still_current = can_reload()
-      -- Clear only the SQL that just committed, even if a newer window gained
-      -- focus. It must not remain offered as an executable pending mutation.
-      if view._sessions[bufnr] == session and session.pending_mutation == pm then
-        session.pending_mutation = nil
-        session._mutation_title = nil
-      end
-      if not still_current then return end
-      -- Clear mutation state and reopen the full table
-      local tbl = pm.table_name
-      local s_url = session.url
-      -- Reopen the full table (not the WHERE-filtered preview)
-      local grip = require("dadbod-grip")
-      grip.open(tbl, s_url, { reuse_win = current_win, write_elapsed_ms = ms,
-        write_engine_timing = written and written.engine_timing, write_is_current = can_reload })
+      -- Client waits pump the event loop. A repeated apply must not send this
+      -- same pending statement again while its first confirmation/write runs.
+      if pm._applying then return end
+      pm._applying = true
+      local ok, apply_err = pcall(function()
+        local current_win = vim.api.nvim_get_current_win()
+        local is_current = require("dadbod-grip.write").capture_owner(bufnr, session)
+        local function can_reload()
+          return is_current() and vim.api.nvim_win_is_valid(current_win)
+            and vim.api.nvim_win_get_buf(current_win) == bufnr
+            and vim.api.nvim_get_current_win() == current_win
+        end
+        local preview_count = pm.row_count and string.format("%d row%s previewed",
+          pm.row_count, pm.row_count == 1 and "" or "s") or "current data; affected rows determined on execution"
+        local choice = vim.fn.confirm(
+          string.format("Execute %s? (%s)\n\n%s", pm.type, preview_count, pm.sql:sub(1, 200)),
+          "&Execute\n&Cancel", 2)
+        if choice ~= 1 then return end
+        local written, err, ms, unknown = require("dadbod-grip.write").execute(pm.sql, session.url, pm.table_name)
+        if err then
+          vim.notify((unknown and "" or "Failed: ") .. err, vim.log.levels.ERROR)
+          return
+        end
+        -- Clear only the SQL that just committed, even if a newer window gained
+        -- focus. It must not remain offered as an executable pending mutation.
+        if view._sessions[bufnr] == session and session.pending_mutation == pm then
+          session.pending_mutation = nil
+          session._mutation_title = nil
+        end
+        local affected = not pm.affected_count_unavailable and written and tonumber(written.affected)
+        local result_count = affected and affected >= 0 and string.format(", %d row%s affected",
+          affected, affected == 1 and "" or "s") or ""
+        vim.notify(string.format("%s executed (%dms%s)", pm.type, ms, result_count), vim.log.levels.INFO)
+        local history = require("dadbod-grip.history")
+        history.record({ sql = pm.sql, url = session.url, type = pm.type:lower(), elapsed_ms = ms })
+        local still_current = can_reload()
+        if not still_current then return end
+        -- Clear mutation state and reopen the full table
+        local tbl = pm.table_name
+        local s_url = session.url
+        -- Reopen the full table (not the WHERE-filtered preview)
+        local grip = require("dadbod-grip")
+        grip.open(tbl, s_url, { reuse_win = current_win, write_elapsed_ms = ms,
+          write_engine_timing = written and written.engine_timing, write_is_current = can_reload })
+      end)
+      pm._applying = nil
+      if not ok then error(apply_err, 0) end
       return
     end
 
@@ -172,6 +180,7 @@ function M.setup(bufnr, ctx)
 
     -- Tier 0: mutation preview: cancel (close the preview)
     if session.pending_mutation then
+      if session.pending_mutation._applying then return end
       session.pending_mutation = nil
       session._mutation_title = nil
       vim.notify("Mutation cancelled", vim.log.levels.INFO)
@@ -233,6 +242,7 @@ function M.setup(bufnr, ctx)
     if not session then return end
     -- Mutation preview: cancel
     if session.pending_mutation then
+      if session.pending_mutation._applying then return end
       session.pending_mutation = nil
       session._mutation_title = nil
       vim.notify("Mutation cancelled", vim.log.levels.INFO)

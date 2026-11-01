@@ -24,11 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forms, DuckDB BY NAME/POSITION and FROM-first queries, parenthesized source
   queries, and MySQL VALUE, SET, empty default lists, and row/column aliases
   are recognized. VALUES query tails do not become predicted incoming rows.
-- UPSERT, REPLACE, ignored conflicts, defaults, and computed/source-query
-  inserts show current data without predicting new values or affected counts.
+- UPSERT, REPLACE, ignored conflicts, explicit DEFAULT values, and
+  computed/source-query inserts show current data without predicting new
+  values or affected counts.
   Confirmation executes the original SQL once; completed writes report the
-  adapter's affected count. Unsupported or multiple-statement previews fail
-  without writing. Committed transaction previews retain their complete SQL;
+  adapter's affected count when available. MySQL/MariaDB transaction counts
+  are omitted when COMMIT prevents determining the mutation count; SQLite
+  trailing comments no longer hide the affected-count query. Repeated apply
+  and cancellation are ignored while a pending mutation is being executed.
+  Unsupported or multiple-statement previews fail without writing.
+  Committed transaction previews retain their complete SQL;
   rollback blocks cannot be stripped into committed mutations. SQL Server
   statements appended without semicolons and CLI command escapes are rejected
   before a preview can issue a database request.
@@ -40,12 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Keyword-shaped variables do not create false aliases, and SQLite/DuckDB
   completion resolves quoted aliases and table names case-insensitively.
   Repeated REPLACE column names no longer cause quadratic completion scans.
+  Dollar parameters, SQL Server temporary tables and nested comments, SQLite
+  single-quoted table sources, embedded brackets in quoted aliases, and MySQL
+  renamed-row column types no longer interrupt or misdirect completion.
 - CTE DELETE modifiers and MERGE statements retain whole-statement confirmation;
   keyword-shaped variables and SELECT FOR UPDATE locks remain query expressions.
-  MERGE uses confirmation rather than a predicted row preview.
+  MERGE uses confirmation rather than a predicted row preview. CTE command
+  positions distinguish writes from keyword-shaped columns and CTE names.
 - MySQL/MariaDB default-row compatibility rewriting preserves DEFAULT VALUES
   inside strings, quoted identifiers, and comments, including batches whose
-  SET or dynamic EXECUTE statements may change string parsing.
+  SET, dynamic EXECUTE, or client directives may change string parsing.
+  MySQL optimizer hints containing client-command escapes are not discarded
+  during preview parsing or default-row compatibility checks.
 - Build mutation preview staging in one pass instead of repeatedly copying
   prior changes. Shared SQL tokenization scans words, strings, and comments
   in chunks while preserving the existing SELECT editability checks.

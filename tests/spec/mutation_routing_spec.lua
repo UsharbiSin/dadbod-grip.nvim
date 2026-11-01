@@ -69,6 +69,37 @@ for _, target in ipairs({ "items", "[dbo].[items]", "TOP (1) items", "@items" })
   mutations[#mutations + 1] = { kind = "sqlserver",
     sql = "WITH src(id) AS (SELECT id FROM source_items), picked AS (SELECT * FROM src) " .. sql }
 end
+-- Command positions, including nested WITH bodies, remain write boundaries.
+for _, sql in ipairs({
+  "WITH src AS (SELECT 1 AS id), changed AS (DELETE FROM items RETURNING *) SELECT * FROM changed",
+  "WITH changed AS (WITH src AS (SELECT 1 AS id) UPDATE items SET value='new' RETURNING *) SELECT * FROM changed",
+  "WITH src AS MATERIALIZED (SELECT 1 AS id) DELETE FROM items WHERE id IN (SELECT id FROM src)",
+  "WITH RECURSIVE src(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM src WHERE id<2)"
+    .. " SEARCH DEPTH FIRST BY id SET update DELETE FROM items WHERE id IN (SELECT id FROM src)",
+  "WITH RECURSIVE src(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM src WHERE id<2)"
+    .. " CYCLE id SET delete USING path UPDATE items SET value='new' WHERE id IN (SELECT id FROM src)",
+}) do
+  mutations[#mutations + 1] = { kind = "postgresql", sql = sql }
+end
+for _, kind in ipairs({ "sqlite", "duckdb", "postgresql", "mysql", "sqlserver" }) do
+  mutations[#mutations + 1] = { kind = kind,
+    sql = "WITH src AS (SELECT 1 AS id) SELECT * FROM src; DELETE FROM items WHERE id=1" }
+end
+mutations[#mutations + 1] = { kind = "sqlserver",
+  sql = "WITH src AS (SELECT 1 AS id) SELECT * FROM src UPDATE items SET value='new' WHERE id=1" }
+mutations[#mutations + 1] = { kind = "sqlserver",
+  sql = "WITH CHANGE_TRACKING_CONTEXT (0x01) UPDATE items SET value='new' WHERE id=1" }
+for _, sql in ipairs({
+  "WITH RECURSIVE src(set) AS (SELECT 1 UNION ALL SELECT set+1 FROM src WHERE set<2)"
+    .. " SEARCH DEPTH FIRST BY set SET seq, changed AS (DELETE FROM items RETURNING *) SELECT * FROM changed",
+  "WITH src AS (SELECT 1 AS id) SELECT * FROM src; EXPLAIN ANALYZE UPDATE items SET value='new'",
+  "WITH src AS (SELECT 1 AS id) SELECT * FROM src; EXPLAIN (ANALYZE true, VERBOSE true)"
+    .. " WITH changed AS (DELETE FROM items RETURNING *) SELECT * FROM changed",
+  "WITH src AS (SELECT 1 AS id) SELECT * FROM src;"
+    .. " (WITH changed AS (DELETE FROM items RETURNING *) SELECT * FROM changed)",
+}) do
+  mutations[#mutations + 1] = { kind = "postgresql", sql = sql }
+end
 for _, case in ipairs(mutations) do
   test("confirmed original statement: " .. case.kind .. " " .. case.sql, function()
     local spec, _, _, mutation = grip._resolve_query(case.sql, 100, case.kind)
@@ -115,6 +146,40 @@ for _, kind in ipairs({ "sqlite", "duckdb", "postgresql", "mysql", "sqlserver" }
   }) do
     reads[#reads + 1] = { kind = kind, sql = sql }
   end
+end
+-- PostgreSQL UPDATE/DELETE/INSERT are non-reserved identifiers. Their position,
+-- not a following keyword, decides whether they are commands.
+for _, keyword in ipairs({ "update", "delete", "insert", "merge" }) do
+  for _, sql in ipairs({
+    "WITH src AS (SELECT 1 AS id) SELECT id AS " .. keyword .. " FROM src",
+    "WITH src AS (SELECT 1 AS " .. keyword .. ") SELECT " .. keyword .. " FROM src",
+    "WITH " .. keyword .. " AS (SELECT 1 AS id) SELECT * FROM " .. keyword .. " u",
+    "WITH " .. keyword .. "(id) AS NOT MATERIALIZED (SELECT 1) SELECT * FROM " .. keyword,
+    "WITH RECURSIVE src(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM src WHERE id<2)"
+      .. " SEARCH DEPTH FIRST BY id SET " .. keyword .. " SELECT * FROM src",
+    "WITH RECURSIVE src(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM src WHERE id<2)"
+      .. " CYCLE id SET " .. keyword .. " USING path SELECT * FROM src",
+  }) do
+    reads[#reads + 1] = { kind = "postgresql", sql = sql }
+  end
+end
+reads[#reads + 1] = { kind = "duckdb",
+  sql = "WITH RECURSIVE src(id) USING KEY (id) AS (SELECT 1 UNION ALL SELECT id+1 FROM src WHERE id<2)"
+    .. " SELECT * FROM src" }
+reads[#reads + 1] = { kind = "sqlserver",
+  sql = "WITH XMLNAMESPACES ('urn:example' AS ns), src AS (SELECT 1 AS id) SELECT * FROM src" }
+reads[#reads + 1] = { kind = "mysql",
+  sql = "WITH RECURSIVE src(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM src WHERE id<2)"
+    .. " CYCLE id RESTRICT SELECT * FROM src" }
+for _, sql in ipairs({
+  "WITH RECURSIVE src(set) AS (SELECT 1 UNION ALL SELECT set+1 FROM src WHERE set<2)"
+    .. " SEARCH DEPTH FIRST BY set SET update SELECT * FROM src",
+  "WITH RECURSIVE src(set,id) AS (SELECT 1,1 UNION ALL SELECT set+1,id+1 FROM src WHERE set<2)"
+    .. " SEARCH BREADTH FIRST BY set,id SET update SELECT * FROM src",
+  "WITH src AS (SELECT 1 AS id) SELECT * FROM src; EXPLAIN ANALYZE SELECT 1 AS update",
+  "WITH src AS (SELECT 1 AS id) SELECT * FROM src; (WITH update AS (SELECT 1 AS id) SELECT * FROM update)",
+}) do
+  reads[#reads + 1] = { kind = "postgresql", sql = sql }
 end
 for _, case in ipairs(reads) do
   test("query lexical boundary: " .. case.kind .. " " .. case.sql, function()
